@@ -1,2 +1,4 @@
 *.gpkg
 *.parquet
+*.idea
+*.xlsx

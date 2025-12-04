@@ -3,10 +3,7 @@
     to calculate the hydraulic characteristics at
     the cross-sections of the low-head dams.
 """
-import matplotlib as mpl
 import numpy as np
-import matplotlib.cm as cm
-import matplotlib.pyplot as plt
 from scipy.optimize import fsolve
 
 
@@ -105,23 +102,8 @@ def dam_height(Q, L, delta_wse, y_t, delta_z=0, g=9.81):
     return P
 
 
-# --------------------------------------------------- APPENDIX ------------------------------------------------------- #
-#
-# ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾\
-#                 H    \
-#               /‾‾‾\   \
-#   Y_U         |    \   \          ~‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾ Y_T
-#               |     \   \       ~ -----------------------------------------
-#               | P    \   ‾‾‾‾‾‾        Y_2
-# ‾‾‾‾‾‾‾‾‾‾‾‾‾‾|       \    Y_1                _____________________________
-#               |        ‾‾‾‾‾‾‾|--------------/                            | ΔZ
-#               |               |                                           |
-#               ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
-#              Fig.1 Depths upstream and downstream of low-head dam.
-
-
 """
-sensitivity analysis stuff...
+    sensitivity analysis stuff...
 """
 
 
@@ -141,80 +123,3 @@ def est_yT(Q: float, T: float, S_fr: float, n: float=0.035, y0: float=1.0):
     # noinspection PyTypeChecker,PyTupleAssignmentBalance
     y_solution, = fsolve(func, y0)
     return y_solution
-
-# Q = np.linspace(1, 1000, 100)
-# Ts = np.linspace(20, 1000, 50)
-# T = 60
-# Ss = np.linspace(0.0002, 0.002, 9)
-# S = 0.002
-# delta_WSE = -3.0
-# WSEs = np.linspace(1, 10, 10)
-#
-# cmap = cm.viridis
-# colors = cmap(np.linspace(0, 1, len(Ts)))
-#
-# cmap2 = cm.viridis
-# colors2 = cmap(np.linspace(0, 1, len(Ss)))
-
-
-# for T, c in zip(Ts, colors):
-#     yT = np.vectorize(est_yT)(Q, T, S)
-#     P = np.vectorize(dam_height)(Q, T, delta_WSE, yT)
-#
-#     plt.plot(Q, P, color=c, label=f'T = {T:.0f}')
-#
-# for S, c in zip(Ss, colors2):
-#     yT = np.vectorize(est_yT)(Q, T, S)
-#     P = np.vectorize(dam_height)(Q, T, delta_WSE, yT)
-#
-#     plt.plot(Q, P, color=c, label=f'S = {S:.4f}')
-#
-#
-# plt.xlabel('Discharge (cms)')
-# plt.ylabel('Dam Height (m)')
-# plt.grid()
-# # plt.legend(title='Top Width 60 (m)')
-# plt.show()
-
-# import plotly.graph_objects as go
-#
-# fig = go.Figure()
-#
-# # Loop over S values and add a surface for each
-#
-# for j, S in enumerate(Ss):  # use j as index for slopes
-#     # Create meshgrid
-#     Q_grid, T_grid = np.meshgrid(Q, Ts)
-#
-#     # Compute P at each (Q, T) for this S
-#     P_grid = np.zeros_like(Q_grid)
-#     for i, T in enumerate(Ts):
-#         yT = np.vectorize(est_yT)(Q, T, S)
-#         P_grid[i, :] = np.vectorize(dam_height)(Q, T, delta_WSE, yT)
-#
-#     # Add the surface
-#     fig.add_trace(go.Surface(
-#         x=Q_grid,
-#         y=T_grid,
-#         z=P_grid,
-#         name=f"S={S:.4f}",
-#         colorscale="Viridis",
-#         coloraxis="coloraxis",   # <--- tie all surfaces to one coloraxis
-#         showscale=False,         # no per-surface colorbars
-#         opacity=0.8
-#     ))
-#
-# fig.update_layout(
-#     title='Dam Height vs Discharge and Top Width for multiple Slopes',
-#     scene=dict(
-#         xaxis_title='Discharge (Q, cms)',
-#         yaxis_title='Top Width (T, m)',
-#         zaxis_title='Dam Height (P, m)'
-#     ),
-#     width=900,
-#     height=700,
-# )
-#
-#
-#
-# fig.show()
