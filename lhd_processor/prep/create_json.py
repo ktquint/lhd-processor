@@ -1,82 +1,129 @@
+import os
 import json
 import pandas as pd
+from ..data_manager import DatabaseManager
 
 
-def rathcelon_input(lhd_csv, output_loc, baseflow_method, nwm_parquet=None):
-    lhd_df = pd.read_csv(lhd_csv)
-    dams = []
-    for index, row in lhd_df.iterrows():
-        name = str(row["ID"])
-        dam_csv = lhd_csv
-        dam_id_field = "ID"
-        dam_id = row["ID"]
-        hydrography = row["hydrography"]
-        hydrology = row["hydrology"]
+def rathcelon_input(db_path, json_output_path, baseflow_method, nwm_parquet):
+    """
+    Reads the Excel database, creates a temporary CSV bridge for RathCelon,
+    and generates the JSON input file with specific conditional logic for
+    Streamflow and Flowline sources.
+    """
+    print("Generating RathCelon input files...")
 
-        res_order = ['dem_1m', 'dem_3m', 'dem_10m']
-        dem_dir = None
-        for res in res_order:
-            val = row[res]
-            if pd.notna(val):
-                dem_dir = val
-                break
+    if not os.path.exists(db_path):
+        print(f"Error: Database file {db_path} not found.")
+        return
 
-        output_dir = row["output_dir"]
+    # 1. Load Data
+    db = DatabaseManager(db_path)
 
+    # 2. Filter for ready sites (Must have DEM and Flowline)
+    # Using .copy() to avoid SettingWithCopy warnings later
+    ready_sites = db.sites.dropna(subset=['dem_dir', 'flowline_path']).copy()
 
-        if hydrology == "GEOGLOWS" and hydrography == "NHDPlus":
-            flowline = row["flowline_NHD"]
-            streamflow = row["flowline_TDX"]
-            known_baseflow = row['dem_baseflow_GEOGLOWS']
+    if ready_sites.empty:
+        print("No sites are ready for processing (missing DEM or Flowline).")
+        return
 
-        elif hydrology == "GEOGLOWS" and hydrography == "GEOGLOWS":
-            flowline = row["flowline_TDX"]
-            streamflow = None
-            known_baseflow = row['dem_baseflow_GEOGLOWS']
+    # 3. Create the "Bridge" CSV
+    output_dir = os.path.dirname(json_output_path)
+    bridge_csv_name = "sites_for_rathcelon.csv"
+    bridge_csv_path = os.path.join(output_dir, bridge_csv_name)
 
-        elif hydrology == "National Water Model" and hydrography == "NHDPlus":
-            flowline = row["flowline_NHD"]
-            streamflow = nwm_parquet
-            known_baseflow = row['dem_baseflow_NWM']
+    try:
+        ready_sites.to_csv(bridge_csv_path, index=False)
+        print(f"Created bridge CSV: {bridge_csv_path}")
+    except Exception as e:
+        print(f"Failed to create bridge CSV: {e}")
+        return
 
-        else: # hydrology == "National Water Model" and hydrography == "GEOGLOWS"
-            flowline = row["flowline_TDX"]
-            streamflow = nwm_parquet
-            known_baseflow = row['dem_baseflow_NWM']
+    dams_list = []
 
+    # 4. Build the Dictionary for each Dam
+    for _, site in ready_sites.iterrows():
+        site_id = site['site_id']
 
-        if baseflow_method == "WSE and LiDAR Date" or baseflow_method == "WSE and Median Daily Flow":
-            use_banks = False
+        # Determine output directory
+        dam_output_dir = site['output_dir']
+        if pd.isna(dam_output_dir):
+            dam_output_dir = os.path.join(output_dir, "Results")
+
+        # --- BASEFLOW & BANKS LOGIC ---
+        # If we calculate via Banks, use_banks=True and we ignore the explicit baseflow value.
+        # If we calculate via WSE, use_banks=False and we need the baseflow value.
+
+        baseflow_val = site.get('dem_baseflow')
+        if pd.isna(baseflow_val):
+            baseflow_val = 0.0
         else:
+            baseflow_val = float(baseflow_val)
+
+        if baseflow_method in ["WSE and LiDAR Date", "WSE and Median Daily Flow"]:
+            use_banks = False
+            # Keep baseflow_val as is
+        else:
+            # e.g., "2-yr Flow and Bank Estimation"
             use_banks = True
-            known_baseflow = None
+            baseflow_val = None  # JSON will show 'null', RathCelon must handle this
 
-        # Check if known_baseflow is a string or NaN (which is not valid JSON)
-        # and convert it to None (which becomes 'null' in JSON)
-        if isinstance(known_baseflow, str) or pd.isna(known_baseflow):
-            known_baseflow = None
+        # --- STREAMFLOW SOURCE LOGIC ---
+        sf_source = str(site.get('streamflow_source'))
+        fl_source = str(site.get('flowline_source'))
 
-        dam_dict = {"name": name,
-                    "dam_csv": dam_csv,
-                    "dam_id_field": dam_id_field,
-                    "dam_id": dam_id,
-                    "flowline": flowline,
-                    "dem_dir": dem_dir,
-                    "bathy_use_banks": use_banks,
-                    "output_dir": output_dir,
-                    "process_stream_network": True,
-                    "find_banks_based_on_landcover": False,
-                    "create_reach_average_curve_file": False,
-                    "known_baseflow": known_baseflow,
-                    "streamflow": streamflow}
+        streamflow_source = None
 
-        dams.append(dam_dict)
+        if sf_source == "GEOGLOWS" and fl_source == "NHDPlus":
+            # Pass the NHD shapefile path so RathCelon can look up the COMID?
+            streamflow_source = str(site['flowline_path'])
 
-    input_data = {"dams": dams}
-    with open(output_loc, 'w') as json_file:
-        # noinspection PyTypeChecker
-        json.dump(input_data, json_file, indent=4)
+        elif sf_source == "GEOGLOWS" and fl_source == "GEOGLOWS":
+            # Pass None (JSON null), implies RathCelon infers it from geometry/defaults
+            streamflow_source = None
 
-    # this will tell us where we saved the input file
+        elif sf_source == 'National Water Model' and fl_source == 'NHDPlus':
+            # Pass the local parquet file path
+            streamflow_source = str(nwm_parquet)
 
-    return dams
+        elif sf_source == 'National Water Model' and fl_source == 'GEOGLOWS':
+            # Pass the local parquet file path
+            streamflow_source = str(nwm_parquet)
+
+        else:
+            # Fallback for unexpected combinations (e.g. USGS)
+            streamflow_source = sf_source
+
+        # --- DICTIONARY CONSTRUCTION ---
+        dam_dict = {
+            "name": str(site['name']),
+            "dam_csv": str(bridge_csv_path),
+            "dam_id_field": "site_id",
+            "dam_id": int(site_id),
+            "flowline": str(site['flowline_path']),
+            "dem_dir": str(site['dem_dir']),
+            "bathy_use_banks": use_banks,
+            "output_dir": str(dam_output_dir),
+            "process_stream_network": True,
+            "find_banks_based_on_landcover": False,
+            "create_reach_average_curve_file": False,
+            "known_baseflow": baseflow_val,
+            "streamflow": streamflow_source
+        }
+
+        dams_list.append(dam_dict)
+
+    # 5. Create Final JSON Wrapper
+    # Note: Removed top-level 'nwm_parquet' key as requested by your logic
+    json_data = {
+        "dams": dams_list
+    }
+
+    # 6. Save JSON
+    try:
+        with open(json_output_path, 'w') as f:
+            json.dump(json_data, f, indent=4)
+        print(f"Successfully created JSON at: {json_output_path}")
+        print(f"Total Dams Included: {len(dams_list)}")
+    except Exception as e:
+        print(f"Failed to write JSON: {e}")

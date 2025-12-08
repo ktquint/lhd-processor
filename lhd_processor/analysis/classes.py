@@ -1,5 +1,4 @@
 import os
-import ast
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -7,8 +6,8 @@ import contextily as ctx
 import matplotlib.pyplot as plt
 import pyproj
 import geoglows
-from matplotlib.ticker import FixedLocator
 from matplotlib.axes import Axes
+from matplotlib.ticker import FixedLocator
 from matplotlib_scalebar.scalebar import ScaleBar
 from scipy.optimize import fsolve
 
@@ -22,19 +21,6 @@ from .utils import (
     rating_curve_intercept,
     get_prob_from_Q
 )
-
-
-def add_north_arrow(ax, size=0.1, loc_x=0.1, loc_y=0.9):
-    """Adds a north arrow to the map."""
-    import matplotlib.patheffects as pe
-    ax.annotate(
-        'N',
-        xy=(loc_x, loc_y), xytext=(loc_x, loc_y - size),
-        xycoords='axes fraction', textcoords='axes fraction',
-        ha='center', va='center',
-        fontsize=16, fontweight='bold',
-        arrowprops=dict(facecolor='black', width=5, headwidth=15)
-    )
 
 
 class CrossSection:
@@ -158,6 +144,7 @@ class CrossSection:
     def plot_fatal_flows(self, ax):
         if self.fatal_qs is None or len(self.fatal_qs) == 0:
             return
+
         np_fatal_qs = np.array(self.fatal_qs)
         fatal_d = self.a * np_fatal_qs ** self.b
         ax.scatter(np_fatal_qs * 35.315, fatal_d * 3.281, label="Recorded Fatality", marker='o', facecolors='none',
@@ -174,9 +161,7 @@ class CrossSection:
     def get_dangerous_flow_range(self):
         """Calculates Qmin and Qmax for Type C jump (in cfs)."""
         Q_i = np.array([0.001])
-        # Solve for intersection of Tailwater with Conjugate (Qmin)
         Q_min = fsolve(rating_curve_intercept, Q_i, args=(self.L, self.P, self.a, self.b, 'conjugate'))[0]
-        # Solve for intersection of Tailwater with Flip Bucket (Qmax)
         Q_max = fsolve(rating_curve_intercept, Q_i, args=(self.L, self.P, self.a, self.b, 'flip'))[0]
         return Q_min * 35.315, Q_max * 35.315
 
@@ -219,23 +204,34 @@ class CrossSection:
 
 
 class Dam:
-    def __init__(self, lhd_id, lhd_csv, hydrology, est_dam, base_results_dir):
+    def __init__(self, lhd_id, db_manager, est_dam, base_results_dir):
         self.id = int(lhd_id)
-        self.hydrology = hydrology
-        lhd_df = pd.read_csv(lhd_csv)
-        id_row = lhd_df[lhd_df['ID'] == self.id].reset_index(drop=True)
-
+        self.db = db_manager
         self.results_dir = base_results_dir
+
+        # Load Data
+        self.site_data = self.db.get_site(self.id)
+        self.incidents_df = self.db.get_site_incidents(self.id)
+
+        if not self.site_data:
+            raise ValueError(f"Dam {self.id} not found in database.")
+
+        self.latitude = self.site_data['latitude']
+        self.longitude = self.site_data['longitude']
+        self.weir_length = self.site_data['weir_length']
+        self.hydrology = self.site_data.get('streamflow_source', 'National Water Model')
+        self.baseflow = float(self.site_data.get('dem_baseflow', 0))
+
+        self.fatal_flows = self.incidents_df['flow'].dropna().tolist()
         self.fig_dir = os.path.join(self.results_dir, str(self.id), "FIGS")
         os.makedirs(self.fig_dir, exist_ok=True)
 
-        # Load COMID table
         current_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(current_dir)
         comid_path = os.path.join(project_root, 'data', 'comid_table.csv')
         self.nwm_id = None
-        self.geoglows_id = None
 
+        self.geoglows_id = None
         if os.path.exists(comid_path):
             comid_df = pd.read_csv(comid_path)
             comid_df['ID'] = pd.to_numeric(comid_df['ID'], errors='coerce')
@@ -244,93 +240,75 @@ class Dam:
                 self.nwm_id = match.iloc[0]['reach_id']
                 self.geoglows_id = match.iloc[0]['linkno']
 
-        # Dam Height setup
-        if est_dam:
-            self.P = None
-        else:
-            self.P = id_row['P_known'].values[0] / 3.218
-
-        self.latitude = id_row['latitude'].values[0]
-        self.longitude = id_row['longitude'].values[0]
-        self.cross_sections = []
-        self.weir_length = id_row['weir_length'].values[0]
-        self.fatality_dates = ast.literal_eval(id_row['fatality_dates'].values[0])
-
-        # Hydrology
-        if hydrology == "GEOGLOWS":
-            self.fatal_flows = ast.literal_eval(id_row.at[0, 'fatality_flows_GEOGLOWS'])
-            baseflow_val = id_row.at[0, 'dem_baseflow_GEOGLOWS']
-        elif hydrology == "USGS":
-            self.fatal_flows = ast.literal_eval(id_row.at[0, 'fatality_flows_USGS'])
-            baseflow_val = id_row.at[0, 'dem_baseflow_USGS']
-        else:  # NWM
-            self.fatal_flows = ast.literal_eval(id_row.at[0, 'fatality_flows_NWM'])
-            baseflow_val = id_row.at[0, 'dem_baseflow_NWM']
-
-        try:
-            self.known_baseflow = float(baseflow_val)
-            if pd.isna(self.known_baseflow): raise ValueError
-        except (ValueError, TypeError):
-            raise ValueError(f"Invalid baseflow value '{baseflow_val}' for Dam {self.id}")
-
-        # VDT + XS Info
         vdt_gpkg = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Local_VDT_Database.gpkg")
         rc_gpkg = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Local_CurveFile.gpkg")
         xs_gpkg = os.path.join(self.results_dir, str(self.id), "XS", f"{self.id}_Local_XS_Lines.gpkg")
+        self.xs_gpkg = xs_gpkg
 
         self.dam_gdf = merge_arc_results(rc_gpkg, vdt_gpkg, xs_gpkg)
-        self.xs_gpkg = xs_gpkg
-        self.bathy_tif = os.path.join(self.results_dir, str(self.id), "Bathymetry", f"{self.id}_ARC_Bathy.tif")
-
+        self.cross_sections = []
         for index, row in self.dam_gdf.iterrows():
             self.cross_sections.append(CrossSection(index, row, self))
 
-        # Dam Height Calculation & Qmin/Qmax Recording
-        for i in range(1, len(self.cross_sections)):
-            s_i = self.cross_sections[i].slope
-            lhd_df.loc[lhd_df['ID'] == self.id, f's_{i}'] = s_i
-            y_ts, y_flips, y_2s, jump_types = [], [], [], []
+        # --- Analysis Logic ---
+        xs_data_list = []
+        hydro_results_list = []
 
-            if est_dam:
-                delta_wse_i = self.cross_sections[i].wse - self.cross_sections[0].wse
-                y_i = self.cross_sections[i].wse - self.cross_sections[i].bed_elevation
-                P_i = dam_height(self.known_baseflow, self.weir_length, delta_wse_i, y_i)
+        for i, xs in enumerate(self.cross_sections):
+            xs_info = {
+                'xs_index': i,
+                'slope': xs.slope,
+                'rating_a': xs.a,
+                'rating_b': xs.b
+            }
 
-                if P_i < 0.1 or P_i > 100:
-                    raise ValueError(f"Calculated dam height ({P_i:.2f}m) is unrealistic.")
+            if i > 0:
+                if est_dam:
+                    delta_wse = xs.wse - self.cross_sections[0].wse
+                    y_i = xs.wse - xs.bed_elevation
+                    try:
+                        P_i = dam_height(self.baseflow, self.weir_length, delta_wse, y_i)
+                        xs.set_dam_height(P_i)
+                        xs_info['P_height'] = P_i
+                    except:
+                        xs_info['P_height'] = None
+                else:
+                    known_p = self.site_data.get('P_known', 2.0)
+                    xs.set_dam_height(known_p)
+                    xs_info['P_height'] = known_p
 
-                self.cross_sections[i].set_dam_height(P_i)
-                lhd_df.loc[lhd_df['ID'] == self.id, f'P_{i}'] = P_i * 3.281
+                if xs.P:
+                    try:
+                        q_min, q_max = xs.get_dangerous_flow_range()
+                        xs_info['Qmin'] = q_min
+                        xs_info['Qmax'] = q_max
+                    except:
+                        pass
 
-                # --- NEW: Calculate and record Qmin/Qmax ---
-                try:
-                    q_min, q_max = self.cross_sections[i].get_dangerous_flow_range()
-                    lhd_df.loc[lhd_df['ID'] == self.id, f'Qmin_{i}'] = q_min
-                    lhd_df.loc[lhd_df['ID'] == self.id, f'Qmax_{i}'] = q_max
-                except Exception as e:
-                    print(f"Could not calculate Qmin/Qmax for XS {i}: {e}")
-                    lhd_df.loc[lhd_df['ID'] == self.id, f'Qmin_{i}'] = None
-                    lhd_df.loc[lhd_df['ID'] == self.id, f'Qmax_{i}'] = None
-                # -------------------------------------------
+                for _, inc_row in self.incidents_df.iterrows():
+                    flow = inc_row['flow']
+                    date = inc_row['date']
 
-                # Jumps
-                for flow in self.fatal_flows:
-                    y_t = self.cross_sections[i].a * flow ** self.cross_sections[i].b
-                    y_flip, y_2 = compute_flip_and_conjugate(flow, self.weir_length, P_i)
-                    y_ts.append(float(y_t))
-                    y_flips.append(float(y_flip))
-                    y_2s.append(float(y_2))
-                    jump_types.append(hydraulic_jump_type(y_2, y_t, y_flip))
-            else:
-                self.cross_sections[i].set_dam_height(self.P)
-                # Same logic would apply here if you were running with known P
+                    if pd.notna(flow) and xs.P:
+                        try:
+                            y_t = xs.a * flow ** xs.b
+                            y_flip, y_2 = compute_flip_and_conjugate(flow, self.weir_length, xs.P)
+                            jump = hydraulic_jump_type(y_2, y_t, y_flip)
 
-            lhd_df.loc[lhd_df['ID'] == self.id, f'y_t_{i}'] = str(y_ts)
-            lhd_df.loc[lhd_df['ID'] == self.id, f'y_flip_{i}'] = str(y_flips)
-            lhd_df.loc[lhd_df['ID'] == self.id, f'y_2_{i}'] = str(y_2s)
-            lhd_df.loc[lhd_df['ID'] == self.id, f'type_{i}'] = str(jump_types)
+                            hydro_results_list.append({
+                                'date': date,
+                                'xs_index': i,
+                                'y_t': y_t,
+                                'y_flip': y_flip,
+                                'y_2': y_2,
+                                'jump_type': jump
+                            })
+                        except:
+                            pass
 
-        lhd_df.to_csv(lhd_csv, index=False)
+            xs_data_list.append(xs_info)
+
+        self.db.update_analysis_results(self.id, xs_data_list, hydro_results_list)
 
     def get_flow_data(self):
         flow_series = None
@@ -378,10 +356,8 @@ class Dam:
         strm_gdf = gpd.read_file(strm_gpkg).to_crs('EPSG:3857')
         xs_gdf = gpd.read_file(self.xs_gpkg).to_crs('EPSG:3857')
 
-        # Bounds
         buffer = 100
         minx, miny, maxx, maxy = xs_gdf.total_bounds
-
         fig, ax = plt.subplots(figsize=(10, 10))
         ax.set_xlim(minx - buffer * 2, maxx + buffer * 2)
         ax.set_ylim(miny - buffer, maxy + buffer)
@@ -394,7 +370,6 @@ class Dam:
         gdf_upstream.plot(ax=ax, color='red', markersize=100, edgecolor='black', zorder=2, label="Upstream")
         gdf_downstream.plot(ax=ax, color='dodgerblue', markersize=100, edgecolor='black', zorder=2, label="Downstream")
 
-        # Ticks (simplified)
         proj = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
         xticks = ax.get_xticks()
         yticks = ax.get_yticks()
@@ -408,11 +383,8 @@ class Dam:
 
         ax.set_title(f"Cross-Section Locations for LHD No. {self.id}")
         ax.legend(title="Cross-Section Location", loc='upper right')
-
-        # Scalebar
         ax.add_artist(ScaleBar(1, units="m", dimension="si-length", location="lower left"))
 
-        # North Arrow
         import matplotlib.patheffects as pe
         ax.annotate('N', xy=(0.95, 0.15), xytext=(0.95, 0.05), xycoords='axes fraction',
                     textcoords='axes fraction', ha='center', va='center', fontsize=22, fontweight='bold',
