@@ -8,97 +8,104 @@ from .download_flowline import download_NHDPlus, download_TDXHYDRO
 
 class Dam:
     """
-        Dam object created from a row of a .csv file
+    Represents a low-head dam and manages its associated geospatial and
+    hydrologic data preparation.
     """
+
     def __init__(self, **kwargs):
         """
-            kwargs will be a .csv row turned into a dictionary
+        Initialize a Dam object from a dictionary (typically a CSV row).
         """
-        # database info
-        self.ID = int(kwargs['ID'])
+        # Database info
+        try:
+            self.ID = int(kwargs['ID'])
+        except (KeyError, ValueError):
+            raise ValueError("Dam 'ID' is missing or invalid in source data.")
+
         self.name = kwargs.get('name', None)
 
-        # geographical info
+        # Geographical info
         self.latitude = float(kwargs['latitude'])
         self.longitude = float(kwargs['longitude'])
         self.city = kwargs.get('city', None)
         self.county = kwargs.get('county', None)
         self.state = kwargs.get('state', None)
 
-        # fatality info
-        self.fatality_dates = ast.literal_eval(kwargs['fatality_dates'])
+        # Fatality info (safely parse list-string)
+        try:
+            self.fatality_dates = ast.literal_eval(kwargs['fatality_dates'])
+        except (ValueError, SyntaxError):
+            self.fatality_dates = []
 
-        # physical information
+        # Physical information
         self.weir_length = float(kwargs['weir_length'])
 
-        # optional info that you may already have
-        # i'm making so many different fields because I want to be able to store as much info as possible
-        # without overwriting anything
+        # Data paths (DEMs)
         self.dem_1m = kwargs.get('dem_1m', None)
         self.dem_3m = kwargs.get('dem_3m', None)
         self.dem_10m = kwargs.get('dem_10m', None)
-
-        self.output_dir = kwargs.get('output_dir', None)
-
-        self.flowline_NHD = kwargs.get('flowline_NHD', None)
-        self.flowline_TDX = kwargs.get('flowline_TDX', None)
-
         self.final_titles = kwargs.get('final_titles', None)
         self.final_resolution = kwargs.get('final_resolution', None)
 
+        # Output and Hydro inputs
+        self.output_dir = kwargs.get('output_dir', None)
+        self.flowline_NHD = kwargs.get('flowline_NHD', None)
+        self.flowline_TDX = kwargs.get('flowline_TDX', None)
+
+        # Baseflow and Fatal Flow storage
         self.dem_baseflow_NWM = kwargs.get('dem_baseflow_NWM', None)
         self.dem_baseflow_GEOGLOWS = kwargs.get('dem_baseflow_GEOGLOWS', None)
 
-        # reset these attributes, so we can change them later
-        self.hydrology = None
-        self.hydrography = None
-        self.dam_reach = None
         self.fatality_flows_NWM = kwargs.get('fatality_flows_NWM', None)
         self.fatality_flows_GEOGLOWS = kwargs.get('fatality_flows_GEOGLOWS', None)
 
+        # Operational attributes (reset for fresh processing)
+        self.hydrology = None
+        self.hydrography = None
+        self.dam_reach = None
 
     def assign_flowlines(self, flowline_dir: str, VPU_gpkg: str):
-        # download the flowlines based on the provided source
-        print(f"Assigning flowlines based on {self.hydrography}")
+        """Downloads/Assigns flowlines based on the selected hydrography source."""
+        print(f"Dam {self.ID}: Assigning flowlines ({self.hydrography})...")
 
         if self.hydrography == 'NHDPlus':
             self.flowline_NHD = download_NHDPlus(self.latitude, self.longitude, flowline_dir)
 
-        if self.hydrography == 'GEOGLOWS' or self.hydrology == 'GEOGLOWS':
+        elif self.hydrography == 'GEOGLOWS' or self.hydrology == 'GEOGLOWS':
             self.flowline_TDX = download_TDXHYDRO(self.latitude, self.longitude, flowline_dir, VPU_gpkg)
 
-
     def assign_dem(self, dem_dir, resolution):
-        # Call download_dem, which now returns resolution_meters
+        """Downloads and assigns the DEM based on requested resolution."""
+        print(f"Dam {self.ID}: Checking/Downloading DEM...")
+
+        # Call download_dem, which returns resolution_meters
         dem_subdir, self.final_titles, resolution_meters = download_dem(
             self.ID, self.latitude, self.longitude, self.weir_length, dem_dir, resolution
         )
 
-        # Clear existing paths first to avoid incorrect assignments if resolution changes
+        # Clear existing paths to ensure accuracy
         self.dem_1m = None
         self.dem_3m = None
         self.dem_10m = None
-        self.final_resolution = None  # Reset this too
+        self.final_resolution = None
 
         if dem_subdir and resolution_meters is not None:
-            # Assign path based on the returned resolution_meters
-            # Add some tolerance for floating point comparisons
+            # Assign path based on the ACTUAL returned resolution
             if resolution_meters <= 1.5:
                 self.dem_1m = dem_subdir
-                self.final_resolution = "Digital Elevation Model (DEM) 1 meter"  # Set descriptive name
-            elif resolution_meters <= 5.0:  # e.g., 1/9 arc-second ~ 3m
+                self.final_resolution = "Digital Elevation Model (DEM) 1 meter"
+            elif resolution_meters <= 5.0:
                 self.dem_3m = dem_subdir
                 self.final_resolution = "National Elevation Dataset (NED) 1/9 arc-second"
-            else:  # Assume >= 10m for 1/3 arc-second or others
+            else:
                 self.dem_10m = dem_subdir
                 self.final_resolution = "National Elevation Dataset (NED) 1/3 arc-second Current"
-            print(
-                f"Assigned DEM path '{dem_subdir}' to appropriate resolution category based on ~{resolution_meters:.2f}m")
+
+            print(f"  - Assigned DEM path to category ~{resolution_meters:.2f}m")
+
         elif dem_subdir:
-            # Handle case where resolution couldn't be determined but path exists
-            print(
-                f"Warning: DEM path '{dem_subdir}' exists, but resolution could not be determined. Assigning based on preferred input '{resolution}'.")
-            # Fallback to assigning based on the initially requested resolution string
+            # Fallback if resolution calc failed but file exists
+            print(f"  - Warning: Could not verify resolution. Defaulting to requested type '{resolution}'.")
             if "1 meter" in resolution:
                 self.dem_1m = dem_subdir
             elif "1/9 arc-second" in resolution:
@@ -106,126 +113,94 @@ class Dam:
             else:
                 self.dem_10m = dem_subdir
         else:
-            print(f"DEM assignment failed for Dam {self.ID}.")
-
+            print(f"  - DEM assignment failed.")
 
     def create_reach(self, nwm_ds=None, tdx_vpu_map=None):
         """
-        Instantiates a StreamReach object based on the dam's
-        streamflow (hydrology) and flowline (hydrography) settings.
+        Instantiates a StreamReach object for this Dam.
         """
-        print(f'Creating Stream Reach for Dam No. {self.ID}')
+        print(f'Dam {self.ID}: Creating Stream Reach object...')
 
-        # 1. Build the data_sources list from *both* attributes
-        # (These are set by assign_hydrology and assign_hydrography)
-        data_sources = [self.hydrology]  # self.hydrology is the streamflow source
+        # Build data sources list
+        data_sources = [self.hydrology]
 
-        # 2. Check if *either* source requires the GEOGLOWS map
+        # Determine if we need the GEOGLOWS map
         geoglows_map_path = None
         if 'GEOGLOWS' in data_sources:
             if tdx_vpu_map:
                 geoglows_map_path = tdx_vpu_map
             else:
-                # Fallback to the old attribute if it exists, though tdx_vpu_map is preferred
                 geoglows_map_path = getattr(self, 'flowline_TDX', None)
 
-            if geoglows_map_path is None:
-                print(f"Warning: GEOGLOWS source selected for Dam {self.ID} but VPU map path not found.")
-
-        # 3. Create the StreamReach object with correct flags
         self.dam_reach = StreamReach(
             lhd_id=self.ID,
             latitude=self.latitude,
             longitude=self.longitude,
-            data_sources=data_sources,  # Pass both sources
-            geoglows_streams=geoglows_map_path,  # FIX 2: Pass map if *either* source is GEOGLOWS
+            data_sources=data_sources,
+            geoglows_streams=geoglows_map_path,
             nwm_ds=nwm_ds,
-            streamflow=True  # <-- We always want to get streamflow
+            streamflow=True
         )
 
-
     def set_dem_baseflow(self, baseflow_method):
-        """
-            estimates the DEM baseflow if it hasn't been calculated yet...
-        """
-        print("Estimating DEM baseflow...")
-        # 1. Determine the attribute name to check based on hydrology
-        baseflow_attr = None
-        if self.hydrology == 'National Water Model':
-            baseflow_attr = 'dem_baseflow_NWM'
-        elif self.hydrology == 'GEOGLOWS':
-            baseflow_attr = 'dem_baseflow_GEOGLOWS'
+        """Estimates the DEM baseflow if not already calculated."""
+        # Map hydrology source to attribute name
+        attr_map = {
+            'National Water Model': 'dem_baseflow_NWM',
+            'GEOGLOWS': 'dem_baseflow_GEOGLOWS'
+        }
 
-        # 2. Now, run the logic a single time using the dynamic attribute name
+        baseflow_attr = attr_map.get(self.hydrology)
+
         if baseflow_attr:
-            # Get the current value of the attribute (e.g., self.dem_baseflow_NWM)
             current_value = getattr(self, baseflow_attr)
-
             if pd.isna(current_value):
-                print(f"{baseflow_attr} is not set. Calling estimation function for Dam ID: {self.ID}")
+                print(f"Dam {self.ID}: Estimating baseflow via '{baseflow_method}'...")
                 baseflow = est_dem_baseflow(self.dam_reach, self.hydrology, baseflow_method)
-                # Set the attribute (e.g., self.dem_baseflow_NWM = baseflow)
                 setattr(self, baseflow_attr, baseflow)
             else:
-                print(f"{baseflow_attr} already has a value: {current_value}")
+                print(f"Dam {self.ID}: Baseflow already set ({current_value}).")
         else:
-            # This else handles cases where hydrology is not NWM or GEOGLOWS
-            print(f"Skipping baseflow check: hydrology '{self.hydrology}' is not recognized.")
-
+            print(f"Dam {self.ID}: Unknown hydrology source '{self.hydrology}'. Skipping baseflow.")
 
     def set_fatal_flows(self):
-        print("Estimating fatal flows...")
-        fatality_dates_kept = []  # Renamed to avoid confusion
-        fatality_flows_kept = []  # Renamed
-        skipped_dates_reasons = {}  # Dictionary to store skipped dates and reasons
+        """Retrieves flow values for recorded fatality dates."""
+        print(f"Dam {self.ID}: Retrieving flows for {len(self.fatality_dates)} fatality dates...")
 
-        for fatality_date in self.fatality_dates:  # Loop through original dates
-            fatality_flow_result = self.dam_reach.get_flow_on_date(fatality_date, self.hydrology)
+        valid_dates = []
+        valid_flows = []
+        skipped_info = {}
 
-            if isinstance(fatality_flow_result, float):  # Check if it's a valid number
-                fatality_dates_kept.append(fatality_date)
-                fatality_flows_kept.append(fatality_flow_result)
+        for date in self.fatality_dates:
+            flow_result = self.dam_reach.get_flow_on_date(date, self.hydrology)
+
+            if isinstance(flow_result, (int, float)) and not pd.isna(flow_result):
+                valid_dates.append(date)
+                valid_flows.append(float(flow_result))
             else:
-                # Store the reason why the date was skipped
-                skipped_dates_reasons[fatality_date] = fatality_flow_result
-                print(
-                    f"Skipping date {fatality_date} for dam {self.ID}. Reason: {fatality_flow_result}")  # Optional: print why it was skipped
+                skipped_info[date] = flow_result
 
-        # Optional: Print a summary of skipped dates
-        if skipped_dates_reasons:
-            print(f"\nSummary of skipped dates for Dam {self.ID}:")
-            for date, reason in skipped_dates_reasons.items():
-                print(f"  - {date}: {reason}")
-            print("-" * 20)
+        # Update attributes
+        self.fatality_dates = valid_dates
 
-        # Update attributes with the lists of dates/flows that were successfully retrieved
-        self.fatality_dates = fatality_dates_kept  # Overwrite with only the dates that had flow data
         if self.hydrology == 'National Water Model':
-            # Only update if the original was NaN, otherwise keep existing data
-            if pd.isna(self.fatality_flows_NWM) or not self.fatality_flows_NWM:  # Check if None or empty list
-                self.fatality_flows_NWM = fatality_flows_kept
+            if pd.isna(self.fatality_flows_NWM) or not self.fatality_flows_NWM:
+                self.fatality_flows_NWM = valid_flows
         elif self.hydrology == 'GEOGLOWS':
-            # Only update if the original was NaN, otherwise keep existing data
-            if pd.isna(self.fatality_flows_GEOGLOWS) or not self.fatality_flows_GEOGLOWS:  # Check if None or empty list
-                self.fatality_flows_GEOGLOWS = fatality_flows_kept
-
+            if pd.isna(self.fatality_flows_GEOGLOWS) or not self.fatality_flows_GEOGLOWS:
+                self.fatality_flows_GEOGLOWS = valid_flows
 
     def set_output_dir(self, output_dir: str):
         self.output_dir = output_dir
 
-
     def set_streamflow_source(self, hydrology: str):
         self.hydrology = hydrology
-
 
     def set_flowline_source(self, hydrography: str):
         self.hydrography = hydrography
 
-
     def assign_reach(self, stream_reach):
         self.dam_reach = stream_reach
 
-
-
     def __repr__(self):
-        return "Hi, I'm a Dam"
+        return f"<Dam ID={self.ID} Name='{self.name}'>"
