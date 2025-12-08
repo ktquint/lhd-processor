@@ -8,10 +8,10 @@ from dask.diagnostics import ProgressBar
 
 # 1. SET THE PATH TO YOUR EXCEL FILE HERE
 # This file must contain 'latitude' and 'longitude' columns
-excel_file_path = "E:\LowHead_Dam_Database_All.xlsx"
+excel_file_path = "/Users/kennyquintana/Developer/lhd-processor/lhd_processor/data/unique_site_coordinates.xlsx"
 
 # 2. SET YOUR DESIRED OUTPUT PARQUET FILE PATH
-output_path = '../data/nwm_daily_retrospective.parquet'
+output_path = '../data/nwm_v3_daily_retrospective.parquet'
 
 # --- Load coordinates from Excel ---
 print(f"Reading coordinates from: {excel_file_path}")

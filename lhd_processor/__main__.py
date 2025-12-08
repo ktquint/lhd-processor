@@ -259,7 +259,7 @@ def threaded_prepare_data():
         data_dir = os.path.join(script_dir, 'data')
         os.makedirs(data_dir, exist_ok=True)
         # Join that directory path with the relative path to your file
-        nwm_parquet = os.path.join(data_dir, 'nwm_daily_retrospective.parquet')
+        nwm_parquet = os.path.join(data_dir, 'nwm_v3_daily_retrospective.parquet')
         # if we want the GEOGLOWS streamflow, we'll need to also download the GEOGLOWS flowlines
         vpu_filename = "vpu-boundaries.gpkg"
         tdx_vpu_map = os.path.join(data_dir, vpu_filename)
@@ -276,7 +276,7 @@ def threaded_prepare_data():
                     # download the parquet
                     hs = HydroShare()
                     resource = hs.resource(hydroshare_id)
-                    resource.file_download(path='nwm_daily_retrospective.parquet',
+                    resource.file_download(path='nwm_v3_daily_retrospective.parquet',
                                            save_path=data_dir)
                     status_var.set("NWM Parquet download complete.")
 
@@ -342,6 +342,7 @@ def threaded_prepare_data():
         for i, row in lhd_df.iterrows():
             i = int(str(i))
             dam_id = row.get("ID", f"Row_{i + 2}")
+            dam_id = int(dam_id)
 
             try:
                 status_var.set(f"Prep: Dam {dam_id} ({i + 1} of {total_dams})...")
