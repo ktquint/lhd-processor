@@ -3,7 +3,7 @@ import json
 import threading
 import pandas as pd
 import tkinter as tk
-import concurrent.futures
+from dask.distributed import Client, LocalCluster, as_completed
 from hsclient import HydroShare
 from tkinter import ttk, filedialog, messagebox
 
@@ -188,7 +188,17 @@ def select_rath_json():
 # --- Logic Functions ---
 
 def process_single_dam_rathcelon(dam_dict):
-    """Worker for multiprocessing."""
+    """Worker for Dask."""
+    
+    # --- Performance Fix: Force single-threaded libraries ---
+    # Even though Dask manages the processes, we explicitly set these 
+    # to ensure libraries like NumPy don't attempt to spawn their own thread pools.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+    
     dam_name = dam_dict.get('name', "Unknown Dam")
     try:
         # Re-import to ensure visibility in worker process
@@ -347,19 +357,40 @@ def threaded_run_rathcelon():
 
         dams = data.get("dams", [])
         total = len(dams)
-        utils.set_status(f"Starting parallel RathCelon for {total} dams...")
+        
+        # --- Worker Calculation ---
+        # Get total CPU cores (defaulting to 1 if detection fails)
+        total_cores = os.cpu_count() or 1
+        # Set workers to total_cores - 1, but ensure at least 1 worker runs
+        worker_count = max(1, total_cores - 1)
+        
+        # Configure Dask Cluster
+        utils.set_status(f"Initializing Dask Cluster with {worker_count} workers for {total} dams...")
+        
+        # processes=True: uses separate processes (bypasses GIL)
+        # threads_per_worker=1: one thread per process (prevents library contention)
+        # n_workers: Uses our calculated available_cores - 1
+        with LocalCluster(processes=True, threads_per_worker=1, n_workers=worker_count) as cluster:
+            with Client(cluster) as client:
+                
+                # Optional: Show dashboard link in console
+                print(f"Dask Dashboard: {client.dashboard_link}")
+                utils.set_status(f"Processing... (Dashboard: {client.dashboard_link})")
 
-        success_count = 0
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            future_to_dam = {executor.submit(process_single_dam_rathcelon, d): d for d in dams}
+                # Submit all tasks to the cluster
+                # client.map applies the function to the list of inputs in parallel
+                futures = client.map(process_single_dam_rathcelon, dams)
 
-            for i, future in enumerate(concurrent.futures.as_completed(future_to_dam)):
-                success, name, err = future.result()
-                if success:
-                    success_count += 1
-                    utils.set_status(f"Finished {name} ({i + 1}/{total})")
-                else:
-                    utils.set_status(f"Error on {name}: {err}")
+                success_count = 0
+                
+                # Process results as they complete
+                for future in as_completed(futures):
+                    success, name, err = future.result()
+                    if success:
+                        success_count += 1
+                        utils.set_status(f"Finished {name} ({success_count}/{total})")
+                    else:
+                        utils.set_status(f"Error on {name}: {err}")
 
         utils.set_status(f"Completed. {success_count} dams processed.")
         messagebox.showinfo("Success", f"Processed {success_count} dams.")
@@ -380,3 +411,4 @@ def start_prep_thread():
 def start_rath_thread():
     rath_run_button.config(state=tk.DISABLED)
     threading.Thread(target=threaded_run_rathcelon, daemon=True).start()
+    
