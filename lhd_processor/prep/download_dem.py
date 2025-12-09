@@ -5,7 +5,6 @@ import requests
 import rasterio
 import numpy as np
 from rasterio.crs import CRS
-# from datetime import datetime
 from dateutil.parser import parse
 from rasterio.merge import merge
 from rasterio.io import MemoryFile

@@ -1,26 +1,24 @@
 import os
+import pyproj
+import geoglows
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 import contextily as ctx
 import matplotlib.pyplot as plt
-import pyproj
-import geoglows
 from matplotlib.axes import Axes
+from scipy.optimize import fsolve
 from matplotlib.ticker import FixedLocator
 from matplotlib_scalebar.scalebar import ScaleBar
-from scipy.optimize import fsolve
 
 # Internal imports
 from .hydraulics import compute_flip_and_conjugate, dam_height
-from .utils import (
-    merge_arc_results,
-    merge_databases,
-    hydraulic_jump_type,
-    round_sigfig,
-    rating_curve_intercept,
-    get_prob_from_Q
-)
+from .utils import (merge_arc_results,
+                    merge_databases,
+                    hydraulic_jump_type,
+                    round_sigfig,
+                    rating_curve_intercept,
+                    get_prob_from_Q)
 
 
 class CrossSection:
@@ -37,7 +35,7 @@ class CrossSection:
         self.index = index
         if self.index == 0:
             self.location = 'Upstream'
-            self.distance = "some"
+            self.distance = int(self.L)
             self.fatal_qs = None
         else:
             self.location = 'Downstream'
@@ -109,7 +107,8 @@ class CrossSection:
         ax.legend(loc='upper right')
 
         fname = f"{'US' if self.index == 0 else 'DS'}_XS_{self.index if self.index > 0 else 'LHD'}_{self.id}.png"
-        if self.index == 0: fname = f"US_XS_LHD_{self.id}.png"
+        if self.index == 0:
+            fname = f"US_XS_LHD_{self.id}.png"
 
         fig.savefig(os.path.join(self.fig_dir, fname))
         return fig
@@ -317,7 +316,7 @@ class Dam:
                 try:
                     current_dir = os.path.dirname(os.path.abspath(__file__))
                     project_root = os.path.dirname(current_dir)
-                    parquet_path = os.path.join(project_root, 'data', 'nwm_daily_retrospective.parquet')
+                    parquet_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.parquet')
                     if os.path.exists(parquet_path):
                         df = pd.read_parquet(parquet_path)
                         if 'feature_id' in df.index.names:

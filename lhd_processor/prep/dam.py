@@ -3,23 +3,23 @@ import pandas as pd
 from .hydroinformatics import StreamReach
 from .download_dem import download_dem
 from .dem_baseflow import est_dem_baseflow
-from .download_flowline import download_NHDPlus, download_TDXHYDRO
+from .download_flowline import download_nhdplus, download_tdx_hydro
 
 
 class Dam:
     """
-    Represents a low-head dam during the data preparation phase.
-    Reads/Writes to the DatabaseManager.
+        Represents a low-head dam during the data preparation phase.
+        Reads/Writes to the DatabaseManager.
     """
 
     def __init__(self, site_id, db_manager):
-        self.ID = int(site_id)
+        self.site_id = int(site_id)
         self.db = db_manager
 
         # Load site data from the manager
-        self.site_data = self.db.get_site(self.ID)
+        self.site_data = self.db.get_site(self.site_id)
         if not self.site_data:
-            self.site_data = {'site_id': self.ID}
+            self.site_data = {'site_id': self.site_id}
 
         # Basic Info
         self.name = self.site_data.get('name')
@@ -28,7 +28,7 @@ class Dam:
         self.weir_length = float(self.site_data.get('weir_length', 100.0))
 
         # Load incidents for processing
-        self.incidents_df = self.db.get_site_incidents(self.ID)
+        self.incidents_df = self.db.get_site_incidents(self.site_id)
 
         # Get settings (may be None initially)
         self.output_dir = self.site_data.get('output_dir')
@@ -44,23 +44,23 @@ class Dam:
         self.flowline_TDX = self.site_data.get('flowline_path')
 
     def assign_flowlines(self, flowline_dir, VPU_gpkg):
-        print(f"Dam {self.ID}: Assigning flowlines ({self.hydrography})...")
+        print(f"Dam {self.site_id}: Assigning flowlines ({self.hydrography})...")
         path = None
 
         if self.hydrography == 'NHDPlus':
-            path = download_NHDPlus(self.latitude, self.longitude, flowline_dir)
+            path = download_nhdplus(self.latitude, self.longitude, flowline_dir)
             self.flowline_NHD = path
         elif 'GEOGLOWS' in [self.hydrography, self.hydrology]:
-            path = download_TDXHYDRO(self.latitude, self.longitude, flowline_dir, VPU_gpkg)
+            path = download_tdx_hydro(self.latitude, self.longitude, flowline_dir, VPU_gpkg)
             self.flowline_TDX = path
 
         if path:
             self.site_data['flowline_path'] = path
 
     def assign_dem(self, dem_dir, resolution):
-        print(f"Dam {self.ID}: Checking/Downloading DEM...")
+        print(f"Dam {self.site_id}: Checking/Downloading DEM...")
         subdir, titles, res = download_dem(
-            self.ID, self.latitude, self.longitude, self.weir_length, dem_dir, resolution
+            self.site_id, self.latitude, self.longitude, self.weir_length, dem_dir, resolution
         )
 
         if subdir:
@@ -103,21 +103,19 @@ class Dam:
                     self.dem_10m = subdir
 
     def create_reach(self, nwm_ds=None, tdx_vpu_map=None):
-        print(f'Dam {self.ID}: Creating Stream Reach object...')
+        print(f'Dam {self.site_id}: Creating Stream Reach object...')
 
-        geoglows_map_path = None
+        geoglows_flowline_path = None
         if 'GEOGLOWS' in [self.hydrology, self.hydrography]:
-            if tdx_vpu_map:
-                geoglows_map_path = tdx_vpu_map
-            else:
-                geoglows_map_path = self.site_data.get('flowline_path')
+            # Always use the specific flowline path we found/downloaded in assign_flowlines
+            geoglows_flowline_path = self.site_data.get('flowline_path')
 
         self.dam_reach = StreamReach(
-            lhd_id=self.ID,
+            lhd_id=self.site_id,
             latitude=self.latitude,
             longitude=self.longitude,
             data_sources=[self.hydrology],
-            geoglows_streams=geoglows_map_path,
+            geoglows_streams=geoglows_flowline_path,
             nwm_ds=nwm_ds,
             streamflow=True
         )
@@ -126,24 +124,43 @@ class Dam:
         """Calculates baseflow and stores it in the 'Sites' dictionary."""
         current_val = self.site_data.get('dem_baseflow')
 
-        if pd.isna(current_val):
-            print(f"Dam {self.ID}: Estimating baseflow via '{baseflow_method}'...")
+        # We generally want to run this if baseflow is missing OR if we want to capture the lidar date
+        # If you want to force it to run even if baseflow exists (to get the date), remove the 'if pd.isna' check.
+        # For now, I will keep the check, but you can remove it if needed.
+        if pd.isna(current_val) or (
+                baseflow_method == "WSE and LiDAR Date" and pd.isna(self.site_data.get('lidar_date'))):
+
+            print(f"Dam {self.site_id}: Estimating baseflow via '{baseflow_method}'...")
             try:
-                baseflow = est_dem_baseflow(self.dam_reach, self.hydrology, baseflow_method)
+                # Unpack the tuple (baseflow, date)
+                baseflow, lidar_date = est_dem_baseflow(self.dam_reach, self.hydrology, baseflow_method)
+
                 self.site_data['dem_baseflow'] = baseflow
                 self.site_data['baseflow_method'] = baseflow_method
+
+                # If we found a date from the LiDAR data, save it!
+                if lidar_date:
+                    print(f"  - Saving LiDAR Date to database: {lidar_date}")
+                    self.site_data['lidar_date'] = lidar_date
+                elif baseflow_method == "WSE and LiDAR Date":
+                    self.site_data['lidar_date'] = None
+
             except Exception as e:
                 print(f"Error estimating baseflow: {e}")
         else:
-            print(f"Dam {self.ID}: Baseflow already set ({current_val}).")
+            print(f"Dam {self.site_id}: Baseflow already set ({current_val}).")
+
 
     def set_fatal_flows(self):
         """Updates the incidents DataFrame with flow values."""
         if self.incidents_df.empty:
-            print(f"Dam {self.ID}: No incidents found to process.")
+            print(f"Dam {self.site_id}: No incidents found to process.")
             return
 
-        print(f"Dam {self.ID}: Retrieving flows for {len(self.incidents_df)} incidents...")
+        if 'source' in self.incidents_df.columns:
+            self.incidents_df['source'] = self.incidents_df['source'].astype(object)
+
+        print(f"Dam {self.site_id}: Retrieving flows for {len(self.incidents_df)} incidents...")
 
         for index, row in self.incidents_df.iterrows():
             date = row['date']
@@ -153,6 +170,7 @@ class Dam:
                     flow = self.dam_reach.get_flow_on_date(date, self.hydrology)
                     if isinstance(flow, (int, float)) and not pd.isna(flow):
                         self.incidents_df.at[index, 'flow'] = flow
+                        # This line below was causing the warning:
                         self.incidents_df.at[index, 'source'] = self.hydrology
                 except Exception as e:
                     print(f"  - Error retrieving flow for {date}: {e}")
@@ -170,8 +188,8 @@ class Dam:
 
     def save_changes(self):
         """Commits changes back to the DataManager."""
-        self.db.update_site_data(self.ID, self.site_data)
-        self.db.update_site_incidents(self.ID, self.incidents_df)
+        self.db.update_site_data(self.site_id, self.site_data)
+        self.db.update_site_incidents(self.site_id, self.incidents_df)
 
     def __repr__(self):
-        return f"<Dam ID={self.ID} Name='{self.name}'>"
+        return f"<Dam ID={self.site_id} Name='{self.name}'>"

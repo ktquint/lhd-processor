@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import matplotlib.pyplot as plt
-from typing import List, Optional, Any
 from shapely.geometry import Point
+from typing import List, Optional, Any
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -323,10 +323,9 @@ class StreamReachGEOGLOWS:
 
         # === 5. Read the file using the buffer as the filter ===
         # This is the "spatial query"
-        gdf = gpd.read_file(
-            self.geoglows_streams_path,
-            bbox=search_buffer.bounds  # Use the buffer's bounds for the fast read
-        )
+        gdf = gpd.read_file(self.geoglows_streams_path,
+                            bbox=search_buffer.bounds  # Use the buffer's bounds for the fast read
+                            )
 
         if gdf.empty:
             print(f"WARNING: No streams found within 2000m of the dam.")
@@ -345,8 +344,17 @@ class StreamReachGEOGLOWS:
         # Calculate distance using the *projected* point
         streams_inside_buffer["distance"] = streams_inside_buffer.geometry.distance(dam_point_projected)
 
-        max_strm_order = streams_inside_buffer['strmOrder'].max()
-        highest_order_streams = streams_inside_buffer[streams_inside_buffer['strmOrder'] == max_strm_order]
+        # Identify the correct column name for Stream Order (case-insensitive)
+        order_col = next((c for c in streams_inside_buffer.columns \
+                          if c.lower() in ['strmorder', 'streamorder', 'order']),
+                         None)
+
+        if order_col:
+            max_strm_order = streams_inside_buffer[order_col].max()
+            highest_order_streams = streams_inside_buffer[streams_inside_buffer[order_col] == max_strm_order]
+        else:
+            print(f"Warning: No 'strmOrder' column found. Defaulting to nearest stream.")
+            highest_order_streams = streams_inside_buffer
 
         if highest_order_streams.empty:
             print(f"WARNING: No 'highest_order_streams' found.")
@@ -476,16 +484,10 @@ class StreamReach(StreamReachGEOGLOWS, StreamReachNWM, StreamReachBase):
                          nwm_ds, streamflow)
 
 
-#
-# --- GEOPACKAGE HELPER FUNCTIONS ---
-# (These are unrelated to StreamReach but are correct and useful)
-#
-
-def create_multilayer_gpkg(
-        gdfs: List[gpd.GeoDataFrame],
-        output_path: str,
-        layer_names: Optional[List[str]] = None
-) -> None:
+def create_multilayer_gpkg(gdfs: List[gpd.GeoDataFrame],
+                           output_path: str,
+                           layer_names: Optional[List[str]] = None
+                           ) -> None:
     """
         Saves a list of GeoDataFrames to a single GeoPackage file, with each
         GeoDataFrame as its own layer.
@@ -499,9 +501,7 @@ def create_multilayer_gpkg(
 
     if layer_names:
         if len(gdfs) != len(layer_names):
-            raise ValueError(
-                "The number of layer names must match the number of GeoDataFrames."
-            )
+            raise ValueError("The number of layer names must match the number of GeoDataFrames.")
     else:
         # Create default layer names if none are provided
         layer_names = [f"layer_{i + 1}" for i in range(len(gdfs))]
@@ -519,7 +519,9 @@ def create_multilayer_gpkg(
             continue
 
         try:
-            gdf.to_file(output_path, driver="GPKG", layer=layer_name)
+            gdf.to_file(filename=output_path,
+                        driver="GPKG",
+                        layer=layer_name)
             print(f"  - Successfully wrote layer: '{layer_name}'")
         except Exception as e:
             print(f"  - Failed to write layer '{layer_name}'. Error: {e}")

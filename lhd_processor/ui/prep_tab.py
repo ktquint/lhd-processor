@@ -1,11 +1,11 @@
 import os
 import json
 import threading
+import pandas as pd
 import tkinter as tk
 import concurrent.futures
-from tkinter import ttk, filedialog, messagebox
-import pandas as pd
 from hsclient import HydroShare
+from tkinter import ttk, filedialog, messagebox
 
 # CLEAN IMPORT: Importing directly from the package, not internal files
 from ..prep import Dam as PrepDam, rathcelon_input
@@ -105,7 +105,7 @@ def setup_prep_tab(parent_tab):
 def select_project_dir():
     path = filedialog.askdirectory()
     if not path: return
-    project_entry.delete(0, tk.END);
+    project_entry.delete(0, tk.END)
     project_entry.insert(0, path)
 
     try:
@@ -113,19 +113,19 @@ def select_project_dir():
         files = [f for f in os.listdir(path) if f.endswith('.xlsx')]
         if files:
             db_path = os.path.join(path, files[0])
-            database_entry.delete(0, tk.END);
+            database_entry.delete(0, tk.END)
             database_entry.insert(0, db_path)
             json_path = os.path.splitext(db_path)[0] + '.json'
-            json_entry.delete(0, tk.END);
+            json_entry.delete(0, tk.END)
             json_entry.insert(0, json_path)
-            rath_json_entry.delete(0, tk.END);
+            rath_json_entry.delete(0, tk.END)
             rath_json_entry.insert(0, json_path)
 
-        dem_entry.delete(0, tk.END);
+        dem_entry.delete(0, tk.END)
         dem_entry.insert(0, os.path.join(path, "DEM"))
-        strm_entry.delete(0, tk.END);
+        strm_entry.delete(0, tk.END)
         strm_entry.insert(0, os.path.join(path, "STRM"))
-        results_entry.delete(0, tk.END);
+        results_entry.delete(0, tk.END)
         results_entry.insert(0, os.path.join(path, "Results"))
         utils.set_status("Project paths loaded.")
     except Exception as e:
@@ -134,32 +134,55 @@ def select_project_dir():
 
 def select_database():
     f = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
-    if f: database_entry.delete(0, tk.END); database_entry.insert(0, f)
+    if f:
+        # 1. Update the Database Entry
+        database_entry.delete(0, tk.END)
+        database_entry.insert(0, f)
+
+        # 2. Derive the JSON path (same name, .json extension)
+        json_path = os.path.splitext(f)[0] + '.json'
+
+        # 3. Update the Prep Tab JSON Entry
+        json_entry.delete(0, tk.END)
+        json_entry.insert(0, json_path)
+
+        # 4. Update the RathCelon JSON Entry (Step 2)
+        rath_json_entry.delete(0, tk.END)
+        rath_json_entry.insert(0, json_path)
 
 
 def select_dem_dir():
     d = filedialog.askdirectory()
-    if d: dem_entry.delete(0, tk.END); dem_entry.insert(0, d)
+    if d:
+        dem_entry.delete(0, tk.END)
+        dem_entry.insert(0, d)
 
 
 def select_strm_dir():
     d = filedialog.askdirectory()
-    if d: strm_entry.delete(0, tk.END); strm_entry.insert(0, d)
+    if d:
+        strm_entry.delete(0, tk.END)
+        strm_entry.insert(0, d)
 
 
 def select_results_dir():
     d = filedialog.askdirectory()
-    if d: results_entry.delete(0, tk.END); results_entry.insert(0, d)
+    if d: results_entry.delete(0, tk.END)
+    results_entry.insert(0, d)
 
 
 def select_json_file():
     f = filedialog.asksaveasfilename(filetypes=[("JSON", "*.json")], defaultextension=".json")
-    if f: json_entry.delete(0, tk.END); json_entry.insert(0, f)
+    if f:
+        json_entry.delete(0, tk.END)
+        json_entry.insert(0, f)
 
 
 def select_rath_json():
     f = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
-    if f: rath_json_entry.delete(0, tk.END); rath_json_entry.insert(0, f)
+    if f:
+        rath_json_entry.delete(0, tk.END)
+        rath_json_entry.insert(0, f)
 
 
 # --- Logic Functions ---
@@ -211,7 +234,7 @@ def threaded_prepare_data():
         data_dir = os.path.join(package_root, 'data')
         os.makedirs(data_dir, exist_ok=True)
 
-        nwm_parquet = os.path.join(data_dir, 'nwm_daily_retrospective.parquet')
+        nwm_parquet = os.path.join(data_dir, 'nwm_v3_daily_retrospective.parquet')
         vpu_filename = "vpu-boundaries.gpkg"
         tdx_vpu_map = os.path.join(data_dir, vpu_filename)
         nwm_ds = None
@@ -222,7 +245,7 @@ def threaded_prepare_data():
                 try:
                     hs = HydroShare()
                     resource = hs.resource(hydroshare_id)
-                    resource.file_download(path='nwm_daily_retrospective.parquet', save_path=data_dir)
+                    resource.file_download(path='nwm_v3_daily_retrospective.parquet', save_path=data_dir)
                 except Exception as e:
                     messagebox.showerror("Download Failed", f"Failed to download NWM file: {e}")
                     return
@@ -289,15 +312,9 @@ def threaded_prepare_data():
             utils.set_status("Saving database...")
             db.save()
 
-            # Note: rathcelon_input probably needs updates to read .xlsx directly
-            # For now, if it expects CSV, we might need a temporary one or update create_json.py
-            # Assuming rathcelon_input is legacy and reads the OLD CSV format, it will break.
-            # You should update create_json.py to read the new Excel schema too.
-            # But for this step, we just finish the loop.
-
             json_loc = json_entry.get()
             # If rathcelon_input is not updated, this line below might fail.
-            # rathcelon_input(xlsx_path, json_loc, baseflow_method, nwm_parquet)
+            rathcelon_input(xlsx_path, json_loc, baseflow_method, nwm_parquet)
 
             utils.set_status(f"Prep complete. {processed_count} dams processed.")
             messagebox.showinfo("Success", f"Prep complete. Database updated.")

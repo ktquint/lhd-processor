@@ -1,11 +1,11 @@
 import os
+import laspy
 import requests
 import tempfile
-import laspy
-import laspy.errors
 import numpy as np
-from scipy.spatial import cKDTree
+import laspy.errors
 from pyproj import Transformer
+from scipy.spatial import cKDTree
 from datetime import datetime, timedelta
 
 # global variables
@@ -188,34 +188,40 @@ def find_water_gpstime(lat, lon):
 
 def est_dem_baseflow(stream_reach, source, method):
     """
-        finds baseflow for a dem along a stream reach
+    Finds baseflow for a dem along a stream reach.
+    Returns a tuple: (dem_baseflow, found_date)
     """
     # extract the lat and lon
     lat = stream_reach.latitude
     lon = stream_reach.longitude
 
-    # get the date range of the lidar data
-    # dem_dates = get_dem_dates(lat, lon)
-    if method == "WSE and LiDar Date":
+    found_date = None  # Variable to store the date we find from LiDAR
+    dem_baseflow = None
+
+    # Robust check for method string
+    if "lidar date" in method.lower():
+        print("Searching for Lidar Point Cloud to find date...")
         lidar_gpstime = find_water_gpstime(lat, lon)
 
-        gpstime_date = None
         if lidar_gpstime:
-            gpstime_date = gpstime_to_date(lidar_gpstime)
+            found_date = gpstime_to_date(lidar_gpstime)
+            print(f"LiDAR Date found: {found_date}")
 
-        # use the date range to estimate the baseflow
-        if not gpstime_date:  # if no dates given, just use the median flow
-            print("No available LiDAR data, so we'll just assume it was an average day...")
+        # Use the date to estimate baseflow
+        if not found_date:
+            print("No LiDAR date found. Assuming median flow.")
             dem_baseflow = stream_reach.get_median_flow(source)
-        else:  # if there are dates, use them lol
-            print("We got some Lidar data, now we gotta estimate the flow that day...")
-            dem_baseflow = stream_reach.get_flow_on_date(gpstime_date, source)
+        else:
+            print(f"Estimating flow for date: {found_date}...")
+            dem_baseflow = stream_reach.get_flow_on_date(found_date, source)
+
         print(f'The baseflow estimate is {dem_baseflow} cms')
 
     elif method == "WSE and Median Daily Flow":
         dem_baseflow = stream_reach.get_median_flow(source)
 
-    else: # method == 2-yr Q and banks
+    else:  # method == 2-yr Q and banks
         dem_baseflow = stream_reach.get_2yr_return_period(source)
 
-    return dem_baseflow
+    # Return BOTH the flow and the date
+    return dem_baseflow, found_date

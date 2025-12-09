@@ -1,9 +1,7 @@
-import io
 import os
 import s3fs
 import zipfile
 import requests
-import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
 from .download_dem import sanitize_filename
@@ -33,171 +31,160 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * c
 
 
+# noinspection PyTypeHints
 def find_huc(latitude: float, longitude: float) -> str or None:
-    # we'll use a bounding box to find a streamgage near our dam
-    bbox = make_bbox(latitude, longitude, 0.1)
-    # Request sites with siteType=ST (surface water sites)
-    bbox_url = (f"https://waterservices.usgs.gov/nwis/site/?format=rdb"
-                f"&bBox={bbox[0]:.7f},{bbox[1]:.7f},{bbox[2]:.7f},{bbox[3]:.7f}"
-                f"&siteType=ST")
-
-    response = requests.get(bbox_url)
-    data = response.text
-
-    # Read data into DataFrame
-    response_df = pd.read_csv(io.StringIO(data), sep="\t", comment="#", skip_blank_lines=True)
-
-    # Convert lat/lon columns to numeric
-    response_df['dec_lat_va'] = pd.to_numeric(response_df['dec_lat_va'], errors='coerce')
-    response_df['dec_long_va'] = pd.to_numeric(response_df['dec_long_va'], errors='coerce')
-
-    # Drop rows with missing coordinates
-    response_df = response_df.dropna(subset=['dec_lat_va', 'dec_long_va'])
-
-    # Filter to short site numbers (likely surface water gages)
-    stream_df = response_df[response_df['site_no'].astype(str).str.len() <= 8].copy()
-
-    # --- ADD THIS CHECK ---
-    if stream_df.empty:
-        # Handle the case where no suitable stream gages were found
-        print(f"Warning: No USGS stream gages found near {latitude}, {longitude} after filtering.")
-        # Decide what to return. Maybe None, or raise a specific error?
-        # Returning None might be better handled downstream.
-        return None
-    # --- END CHECK ---
-
-    # Now find the closest among these (this code only runs if stream_df wasn't empty)
-    stream_df['distance_km'] = stream_df.apply(lambda row: haversine(latitude, longitude,
-                                                                     row['dec_lat_va'], row['dec_long_va']),
-                                               axis=1)
-
-    nearest_site = stream_df.loc[stream_df['distance_km'].idxmin()]
-
-    return nearest_site['huc_cd'][:4]  # Only return huc if a site was found
-
-
-def download_NHDPlus(latitude: float, longitude: float, flowline_dir: str) -> str|None:
     """
-        finds the HUC4 associated with the stream
-        downloads the NHDPlus HR data for that HUC
-        merges the Flowline with VAA table
-        saves new Flowline layer as a .gpkg and deletes the old one
+    Queries the USGS WBD Map Service to find the HUC4 code for a point.
     """
-    hu4 = find_huc(latitude, longitude)
-    if hu4 is None:
-        print(f"Could not determine HUC4 for coordinates {latitude}, {longitude}. Skipping NHDPlus download.")
-        return None  # Indicate failure
+    url = "https://hydro.nationalmap.gov/arcgis/rest/services/wbd/MapServer/2/query"
 
-    # before we go any further, let's make sure we haven't already downloaded this huc...
-    already_downloaded = [f for f in os.listdir(flowline_dir) if hu4 in f]
-    if already_downloaded:
-        print(f"The NHD Flowline for HU4: {hu4} is already downloaded")
-        # return the file name to store in the DataFrame
-        return os.path.join(flowline_dir, already_downloaded[0])
-
-    bbox = make_bbox(latitude, longitude, 0.01)
-    print(bbox)
-
-    product = "National Hydrography Dataset Plus High Resolution (NHDPlus HR)"
-    base_url = "https://tnmaccess.nationalmap.gov/api/v1/products"
-
-    params = {"bbox": f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
-              "datasets": product, "max": 10,
-              "format": "GeoPackage, NHDPlus HR Rasters",
-              "outputFormat": "JSON",}
+    params = {
+        'geometry': f"{longitude},{latitude}",
+        'geometryType': 'esriGeometryPoint',
+        'inSR': '4326',  # <--- Tells server these are Lat/Lon coordinates
+        'spatialRel': 'esriSpatialRelIntersects',
+        'outFields': 'huc4,name',
+        'f': 'json',
+        'returnGeometry': 'false'
+    }
 
     try:
-        # ask the api to grant our wish
-        response = requests.get(base_url, params=params)
-        response.raise_for_status()
+        r = requests.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
 
-        # let's look at the results
-        results = response.json().get("items", [])
-        print(f'original results: {results}')
+        if 'features' in data and len(data['features']) > 0:
+            # Handle potential case sensitivity (huc4 vs HUC4)
+            attrs = data['features'][0]['attributes']
+            # Try lowercase keys first, then uppercase, or standard HUC4
+            huc4 = attrs.get('huc4') or attrs.get('HUC4')
+            name = attrs.get('name') or attrs.get('NAME')
 
-        # filter for .gpkg files
-        gpkg_results = [item for item in results if
-                        'gpkg' in item.get("downloadURL", "").lower() or
-                        'geopackage'  in item.get("title", "").lower()]
+            if huc4:
+                # print(f"Found {huc4} ({name})") # Uncomment if you want verbose logs
+                return huc4
 
-        print(f'gpkg results: {gpkg_results}')
+        print(f"Point {latitude},{longitude} is not inside a US HUC4 boundary.")
+        return None
 
-        # filter for the right huc
-        huc_results = [item for item in gpkg_results if
-                       f'_{hu4}_' in item.get("downloadURL", "").lower()]
+    except Exception as e:
+        print(f"Error looking up HUC4: {e}")
+        return None
 
 
-        if len(huc_results) > 1:
-            print("Retrieved too many results...")
+def download_nhdplus(latitude: float, longitude: float, flowline_dir: str) -> str | None:
+    # 1. Get the HUC
+    hu4 = find_huc(latitude, longitude)
+    if hu4 is None:
+        return None  # Stop if we can't find the location
+
+    # 2. Check local file (prevent re-download)
+    #    We look for the "_VAA_RI" file we create at the end of this function
+    already_processed = [f for f in os.listdir(flowline_dir) if hu4 in f and 'VAA_RI' in f]
+    if already_processed:
+        print(f"    – HUC {hu4} is already downloaded and processed.")
+        return os.path.join(flowline_dir, already_processed[0])
+
+    # 3. Setup TNM API Query
+    base_url = "https://tnmaccess.nationalmap.gov/api/v1/products"
+
+    # We search specifically for the GeoPackage format for this HUC
+    params = {
+        "datasets": "National Hydrography Dataset Plus High Resolution (NHDPlus HR)",
+        "q": f"NHDPLUS_H_{hu4}_HU4",  # Specific filename text
+        "prodFormats": "GeoPackage",
+        "max": 10
+    }
+
+    print(f"    – Searching USGS database for HUC {hu4}...")
+
+    try:
+        r = requests.get(base_url, params=params)
+        r.raise_for_status()
+        items = r.json().get('items', [])
+
+        if not items:
+            print("    – No NHDPlus HR products found for this HUC.")
             return None
 
-        final_gpkg = huc_results[0]
+        # 4. CRITICAL FIX: Sort by date to get the newest file
+        #    This fixes the 404 error by ignoring old, deleted versions
+        items.sort(key=lambda x: x.get('publicationDate', ''), reverse=True)
+        final_gpkg = items[0]
 
+        download_url = final_gpkg['downloadURL']
+        file_title = final_gpkg['title']
+        print(f"    – Found latest version: {final_gpkg['publicationDate']} ({file_title})")
+
+        # 5. Download and Extract (Standard logic)
         os.makedirs(flowline_dir, exist_ok=True)
+        sanitized_title = sanitize_filename(file_title)
 
-        title = final_gpkg.get("title", "Unnamed")
-        sanitized_title = sanitize_filename(title)
-        download_url = final_gpkg.get("downloadURL", "")
+        # Define paths
+        local_zip = os.path.join(flowline_dir, f"{sanitized_title}.zip")
+        # The internal file usually matches the zip name but ends in .gpkg
+        # We will detect the .gpkg dynamically after unzipping to be safe
 
-        gpkg_loc = os.path.join(flowline_dir, download_url.rsplit('/', 1)[-1].replace('.zip', '.gpkg'))
+        # Download
+        print(f"    – Downloading {sanitized_title}...")
+        with requests.get(download_url, stream=True) as stream:
+            stream.raise_for_status()
+            with open(local_zip, "wb") as f:
+                for chunk in stream.iter_content(chunk_size=8192):
+                    f.write(chunk)
 
-        if not os.path.exists(gpkg_loc):
-            local_zip_path = os.path.join(flowline_dir, f"{sanitized_title}.zip")
-            print(f"Retrieving {sanitized_title}...")
+        # Unzip
+        print("    – Extracting...")
+        with zipfile.ZipFile(local_zip, 'r') as z:
+            z.extractall(flowline_dir)
+            # Find the .gpkg file we just extracted
+            extracted_files = z.namelist()
+            gpkg_name = next((f for f in extracted_files if f.endswith('.gpkg')), None)
 
-            with requests.get(download_url, stream=True) as r:
-                r.raise_for_status()
-                with open(local_zip_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            print(f"Saved to {local_zip_path}")
+        os.remove(local_zip)  # Cleanup zip
 
-            # unzip the zip file
-            with zipfile.ZipFile(local_zip_path, 'r') as zip_ref:
-                zip_ref.extractall(flowline_dir)
+        if not gpkg_name:
+            print("    – Error: No .gpkg found in the downloaded zip.")
+            return None
 
-            # let's remove the zip file after extraction
-            os.remove(local_zip_path)
+        gpkg_loc = os.path.join(flowline_dir, gpkg_name)
 
+        # 6. Processing (Merge VAA and Re-Index)
+        #    (This part of your original code was good, pasting it back in for completeness)
+        print("    – Processing Flowlines and VAAs...")
+        flowlines_gdf = gpd.read_file(gpkg_loc, layer='NHDFlowline', engine='fiona')
+        metadata_gdf = gpd.read_file(gpkg_loc, layer='NHDPlusFlowlineVAA', engine='fiona')
 
-        # 1. read data into memory
-        flowlines_gdf = gpd.read_file(filename=gpkg_loc, layer='NHDFlowline', engine='fiona')
-        metadata_gdf = gpd.read_file(filename=gpkg_loc, layer='NHDPlusFlowlineVAA', engine='fiona')
-
-        # 2. merge data while in memory
         flowlines_gdf.columns = flowlines_gdf.columns.str.lower()
         metadata_gdf.columns = metadata_gdf.columns.str.lower()
+
         merged_gdf = flowlines_gdf.merge(metadata_gdf, on=['nhdplusid', 'reachcode', 'vpuid'])
 
-        # 3. re-index while in memory
         reindexed_cols = {'hydroseq', 'uphydroseq', 'dnhydroseq'}
         if reindexed_cols.issubset(merged_gdf.columns) and not merged_gdf.empty:
             offset = merged_gdf['hydroseq'].min() - 1
             for col in reindexed_cols:
                 merged_gdf[col] = merged_gdf[col] - offset
-            print(f"    – Re-indexed hydroseq fields in memory. Offset applied: {offset}")
+            print(f"    – Re-indexed hydroseq fields. Offset: {offset}")
 
-        # 4. save the final, processed gdf
-        #   VAA for value-added attributes and RI for re-indexed
         final_gpkg_loc = gpkg_loc.replace('.gpkg', '_VAA_RI.gpkg')
-        merged_gdf.to_file(filename=final_gpkg_loc, layer='NHDFlowline', driver='GPKG')
-        print(f"    – Saved final re-indexed file as: {os.path.basename(final_gpkg_loc)}")
+        merged_gdf.to_file(final_gpkg_loc, layer='NHDFlowline', driver='GPKG')
 
-        # 5. clean up by deleting original files
-        files_to_delete =[gpkg_loc, gpkg_loc.replace('.gpkg', '.xml'),
-                          gpkg_loc.replace('.gpkg', '.jpg')]
-        for loc in files_to_delete:
-            if os.path.exists(loc):
-                os.remove(loc)
+        # Cleanup original unpacked files
+        for ext in ['.gpkg', '.xml', '.jpg']:
+            f_path = gpkg_loc.replace('.gpkg', ext)
+            if os.path.exists(f_path):
+                os.remove(f_path)
 
         return final_gpkg_loc
 
-    except requests.RequestException as e:
-        print(f"An error occurred during the download: {e}")
+    except Exception as e:
+        print(f"    – An error occurred: {e}")
         return None
 
 
-def download_TDXHYDRO(latitude: float, longitude: float, flowline_dir: str, vpu_map_path: str) -> str:
+# noinspection PyTypeChecker
+def download_tdx_hydro(latitude: float, longitude: float, flowline_dir: str, vpu_map_path: str) -> str:
     """
     Finds the correct VPU code for a lat/lon by reading the vpu_map_path file,
     then downloads the individual VPU .gpkg file from S3 if it doesn't
