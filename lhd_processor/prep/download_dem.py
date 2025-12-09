@@ -8,7 +8,7 @@ from rasterio.crs import CRS
 from dateutil.parser import parse
 from rasterio.merge import merge
 from rasterio.io import MemoryFile
-from rasterio.warp import calculate_default_transform, reproject, Resampling# , transform_bounds
+from rasterio.warp import calculate_default_transform, reproject, Resampling
 
 
 def extract_date(item):

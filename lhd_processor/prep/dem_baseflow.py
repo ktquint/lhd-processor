@@ -173,11 +173,9 @@ def find_water_gpstime(lat, lon):
         print(f"File: {las_path}")
         print(f"Error: {e}")
         print("\nThis means your environment is missing a library to read compressed")
-        print("LiDAR files (.laz). To fix this, please activate your conda")
-        print("environment (e.g., 'conda activate rathcelon_py310') and run:")
+        print("LiDAR files (.laz). To fix this, please ensure your environment is active")
+        print("(e.g., 'conda activate lhd-environment') and run:")
         print("\n    pip install lazrs\n")
-        print("Or, if you prefer conda:")
-        print("\n    conda install -c conda-forge lazrs\n")
         print("=" * 50)
         return None  # Continue to fallback (median flow)
     except Exception as e:

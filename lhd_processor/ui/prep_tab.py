@@ -314,7 +314,14 @@ def threaded_prepare_data():
 
             json_loc = json_entry.get()
             # If rathcelon_input is not updated, this line below might fail.
-            rathcelon_input(xlsx_path, json_loc, baseflow_method, nwm_parquet)
+            rathcelon_input(
+                xlsx_path,
+                json_loc,
+                baseflow_method,
+                nwm_parquet,
+                flowline_source,
+                streamflow_source
+            )
 
             utils.set_status(f"Prep complete. {processed_count} dams processed.")
             messagebox.showinfo("Success", f"Prep complete. Database updated.")
