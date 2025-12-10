@@ -362,7 +362,7 @@ def threaded_run_rathcelon():
         # Get total CPU cores (defaulting to 1 if detection fails)
         total_cores = os.cpu_count() or 1
         # Set workers to total_cores - 1, but ensure at least 1 worker runs
-        worker_count = max(1, total_cores - 1)
+        worker_count = max(1, int((total_cores - 1)/2))
         
         # Configure Dask Cluster
         utils.set_status(f"Initializing Dask Cluster with {worker_count} workers for {total} dams...")

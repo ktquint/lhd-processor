@@ -58,7 +58,7 @@ def find_huc(latitude: float, longitude: float) -> str or None:
             attrs = data['features'][0]['attributes']
             # Try lowercase keys first, then uppercase, or standard HUC4
             huc4 = attrs.get('huc4') or attrs.get('HUC4')
-            name = attrs.get('name') or attrs.get('NAME')
+            # name = attrs.get('name') or attrs.get('NAME')
 
             if huc4:
                 # print(f"Found {huc4} ({name})") # Uncomment if you want verbose logs
@@ -76,10 +76,11 @@ def download_nhdplus(latitude: float, longitude: float, flowline_dir: str) -> st
     # 1. Get the HUC
     hu4 = find_huc(latitude, longitude)
     if hu4 is None:
-        return None  # Stop if we can't find the location
+        return None
+
+    hu4 = f"{int(hu4):04d}"  # Ensure 4-digit string
 
     # 2. Check local file (prevent re-download)
-    #    We look for the "_VAA_RI" file we create at the end of this function
     already_processed = [f for f in os.listdir(flowline_dir) if hu4 in f and 'VAA_RI' in f]
     if already_processed:
         print(f"    – HUC {hu4} is already downloaded and processed.")
@@ -88,10 +89,10 @@ def download_nhdplus(latitude: float, longitude: float, flowline_dir: str) -> st
     # 3. Setup TNM API Query
     base_url = "https://tnmaccess.nationalmap.gov/api/v1/products"
 
-    # We search specifically for the GeoPackage format for this HUC
+    # We remove 'bbox' here to be safer and just rely on the HUC search
     params = {
         "datasets": "National Hydrography Dataset Plus High Resolution (NHDPlus HR)",
-        "q": f"NHDPLUS_H_{hu4}_HU4",  # Specific filename text
+        "q": hu4,
         "prodFormats": "GeoPackage",
         "max": 10
     }
@@ -107,81 +108,112 @@ def download_nhdplus(latitude: float, longitude: float, flowline_dir: str) -> st
             print("    – No NHDPlus HR products found for this HUC.")
             return None
 
-        # 4. CRITICAL FIX: Sort by date to get the newest file
-        #    This fixes the 404 error by ignoring old, deleted versions
+        # Sort by date (Newest First)
         items.sort(key=lambda x: x.get('publicationDate', ''), reverse=True)
-        final_gpkg = items[0]
 
-        download_url = final_gpkg['downloadURL']
-        file_title = final_gpkg['title']
-        print(f"    – Found latest version: {final_gpkg['publicationDate']} ({file_title})")
+        # --- NEW: Loop through items until one works ---
+        final_gpkg_loc = None
 
-        # 5. Download and Extract (Standard logic)
-        os.makedirs(flowline_dir, exist_ok=True)
-        sanitized_title = sanitize_filename(file_title)
+        for item in items:
+            download_url = item['downloadURL']
+            file_title = item['title']
+            pub_date = item['publicationDate']
 
-        # Define paths
-        local_zip = os.path.join(flowline_dir, f"{sanitized_title}.zip")
-        # The internal file usually matches the zip name but ends in .gpkg
-        # We will detect the .gpkg dynamically after unzipping to be safe
+            print(f"    – Attempting version: {pub_date}...")
 
-        # Download
-        print(f"    – Downloading {sanitized_title}...")
-        with requests.get(download_url, stream=True) as stream:
-            stream.raise_for_status()
-            with open(local_zip, "wb") as f:
-                for chunk in stream.iter_content(chunk_size=8192):
-                    f.write(chunk)
+            try:
+                # Setup download path
+                sanitized_title = sanitize_filename(file_title)
+                local_zip = os.path.join(flowline_dir, f"{sanitized_title}.zip")
 
-        # Unzip
-        print("    – Extracting...")
-        with zipfile.ZipFile(local_zip, 'r') as z:
-            z.extractall(flowline_dir)
-            # Find the .gpkg file we just extracted
-            extracted_files = z.namelist()
-            gpkg_name = next((f for f in extracted_files if f.endswith('.gpkg')), None)
+                # Stream Download
+                with requests.get(download_url, stream=True) as stream:
+                    # Check if the link is actually valid before downloading
+                    if stream.status_code == 404:
+                        print(f"      [404 Error] This USGS link is broken. Trying next version...")
+                        continue  # Skip to next item in loop
 
-        os.remove(local_zip)  # Cleanup zip
+                    stream.raise_for_status()  # Raise other errors (500, etc.)
 
-        if not gpkg_name:
-            print("    – Error: No .gpkg found in the downloaded zip.")
+                    # If we get here, the link is good! Download it.
+                    with open(local_zip, "wb") as f:
+                        for chunk in stream.iter_content(chunk_size=8192):
+                            f.write(chunk)
+
+                # Unzip
+                print("      Extracting...")
+                gpkg_name = None
+                with zipfile.ZipFile(local_zip, 'r') as z:
+                    z.extractall(flowline_dir)
+                    extracted_files = z.namelist()
+                    gpkg_name = next((f for f in extracted_files if f.endswith('.gpkg')), None)
+
+                os.remove(local_zip)
+
+                if not gpkg_name:
+                    print("      [Error] No .gpkg found in zip. Trying next version...")
+                    continue
+
+                gpkg_loc = os.path.join(flowline_dir, gpkg_name)
+
+                # --- Processing (Merge/Reindex) ---
+                print("      Processing Flowlines and VAAs...")
+                try:
+                    flowlines_gdf = gpd.read_file(gpkg_loc, layer='NHDFlowline', engine='fiona')
+                    metadata_gdf = gpd.read_file(gpkg_loc, layer='NHDPlusFlowlineVAA', engine='fiona')
+                except Exception as e:
+                    print(f"      [Error] Could not read layers ({e}). Trying next version...")
+                    continue
+
+                # Normalizing & Merging
+                flowlines_gdf.columns = flowlines_gdf.columns.str.lower()
+                metadata_gdf.columns = metadata_gdf.columns.str.lower()
+                common_cols = ['nhdplusid', 'reachcode', 'vpuid']
+
+                if not all(col in flowlines_gdf.columns for col in common_cols):
+                    print("      [Error] Missing join columns. Trying next version...")
+                    continue
+
+                merged_gdf = flowlines_gdf.merge(metadata_gdf, on=common_cols)
+
+                # Re-Indexing
+                reindexed_cols = {'hydroseq', 'uphydroseq', 'dnhydroseq'}
+                if reindexed_cols.issubset(merged_gdf.columns) and not merged_gdf.empty:
+                    min_val = merged_gdf['hydroseq'].min()
+                    if min_val > 1e9:
+                        offset = min_val - 1
+                        print(f"      Re-indexing huge Hydroseq (Min: {min_val:.0f}). Offset: {offset:.0f}")
+                        for col in reindexed_cols:
+                            merged_gdf[col] = merged_gdf[col] - offset
+
+                # Save Final
+                final_path = gpkg_loc.replace('.gpkg', '_VAA_RI.gpkg')
+                merged_gdf.to_file(final_path, layer='NHDFlowline', driver='GPKG')
+
+                # Cleanup
+                for ext in ['.gpkg', '.xml', '.jpg']:
+                    f_path = gpkg_loc.replace('.gpkg', ext)
+                    if os.path.exists(f_path):
+                        os.remove(f_path)
+
+                # SUCCESS! Break the loop and return
+                final_gpkg_loc = final_path
+                print(f"    – Success! Processed: {os.path.basename(final_path)}")
+                break
+
+            except Exception as e:
+                print(f"      [Error] Failed processing {pub_date}: {e}")
+                continue
+
+        if final_gpkg_loc:
+            return final_gpkg_loc
+        else:
+            print("    – CRITICAL: All available versions failed to download/process.")
             return None
 
-        gpkg_loc = os.path.join(flowline_dir, gpkg_name)
-
-        # 6. Processing (Merge VAA and Re-Index)
-        #    (This part of your original code was good, pasting it back in for completeness)
-        print("    – Processing Flowlines and VAAs...")
-        flowlines_gdf = gpd.read_file(gpkg_loc, layer='NHDFlowline', engine='fiona')
-        metadata_gdf = gpd.read_file(gpkg_loc, layer='NHDPlusFlowlineVAA', engine='fiona')
-
-        flowlines_gdf.columns = flowlines_gdf.columns.str.lower()
-        metadata_gdf.columns = metadata_gdf.columns.str.lower()
-
-        merged_gdf = flowlines_gdf.merge(metadata_gdf, on=['nhdplusid', 'reachcode', 'vpuid'])
-
-        reindexed_cols = {'hydroseq', 'uphydroseq', 'dnhydroseq'}
-        if reindexed_cols.issubset(merged_gdf.columns) and not merged_gdf.empty:
-            offset = merged_gdf['hydroseq'].min() - 1
-            for col in reindexed_cols:
-                merged_gdf[col] = merged_gdf[col] - offset
-            print(f"    – Re-indexed hydroseq fields. Offset: {offset}")
-
-        final_gpkg_loc = gpkg_loc.replace('.gpkg', '_VAA_RI.gpkg')
-        merged_gdf.to_file(final_gpkg_loc, layer='NHDFlowline', driver='GPKG')
-
-        # Cleanup original unpacked files
-        for ext in ['.gpkg', '.xml', '.jpg']:
-            f_path = gpkg_loc.replace('.gpkg', ext)
-            if os.path.exists(f_path):
-                os.remove(f_path)
-
-        return final_gpkg_loc
-
     except Exception as e:
-        print(f"    – An error occurred: {e}")
+        print(f"    – API Error: {e}")
         return None
-
 
 # noinspection PyTypeChecker
 def download_tdx_hydro(latitude: float, longitude: float, flowline_dir: str, vpu_map_path: str) -> str:
