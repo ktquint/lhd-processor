@@ -1,10 +1,29 @@
 import os
+import sys
+
+# 1. DEFINE PATHS FIRST
+# It is safer to use sys.prefix to get the active environment path automatically
+# rather than hardcoding "/opt/anaconda3/envs/..."
+env_path = sys.prefix
+proj_lib_path = os.path.join(env_path, "share", "proj")
+
+# 2. SET ENVIRONMENT VARIABLES BEFORE IMPORTING GEOSPATIAL LIBS
+os.environ["PROJ_LIB"] = proj_lib_path
+
+# 3. NOW IMPORT LIBRARIES
+import pyproj
+
+# Force pyproj to reload the data dir just in case
+pyproj.datadir.set_data_dir(proj_lib_path)
+
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
 
 
 def main():
+    # Print to verify it's using the right path now
+    print(f"Using PROJ_LIB: {os.environ.get('PROJ_LIB')}")
     # ---------------- Configuration ----------------
     # Path to your CSV file
     csv_path = '../lhd_processor/data/nhd_geoglows_flowline_data_final.csv'

@@ -1,21 +1,23 @@
 import os
 import json
 import threading
+import gc
 import pandas as pd
 import tkinter as tk
 from dask.distributed import Client, LocalCluster, as_completed
 from hsclient import HydroShare
 from tkinter import ttk, filedialog, messagebox
 
-# CLEAN IMPORT: Importing directly from the package, not internal files
+# CLEAN IMPORT: Importing directly from the package
 from ..prep import Dam as PrepDam, rathcelon_input
-from ..data_manager import DatabaseManager  # Import Manager
+from ..data_manager import DatabaseManager
 from . import utils
 
 # Import Rathcelon carefully
 try:
     from rathcelon.classes import Dam as RathcelonDam
-except ImportError:
+except Exception as e:
+    print(f"Warning: Could not import RathCelon. Error: {e}")
     RathcelonDam = None
 
 # Module-level widgets
@@ -32,13 +34,17 @@ baseflow_var = None
 prep_run_button = None
 rath_json_entry = None
 rath_run_button = None
+rath_stop_button = None  # <--- New Widget
+
+# Global Threading Event for Stopping
+stop_event = threading.Event()  # <--- New Flag
 
 
 def setup_prep_tab(parent_tab):
     """Constructs the UI for the Prep tab."""
     global project_entry, database_entry, dem_entry, strm_entry, results_entry
     global json_entry, flowline_var, dd_var, streamflow_var, baseflow_var
-    global prep_run_button, rath_json_entry, rath_run_button
+    global prep_run_button, rath_json_entry, rath_run_button, rath_stop_button
 
     # --- Step 1 Frame ---
     prep_frame = ttk.LabelFrame(parent_tab, text="Step 1: Prepare Data")
@@ -89,15 +95,25 @@ def setup_prep_tab(parent_tab):
     # --- Step 2 Frame ---
     rath_frame = ttk.LabelFrame(parent_tab, text="Step 2: Run RathCelon")
     rath_frame.pack(pady=10, padx=10, fill="x")
-    rath_frame.columnconfigure(1, weight=1)
+    rath_frame.columnconfigure(0, weight=1)  # Allow expansion
+    rath_frame.columnconfigure(1, weight=1)  # Allow expansion
 
     ttk.Button(rath_frame, text="Select Input File (.json)", command=select_rath_json).grid(row=0, column=0, padx=5,
                                                                                             pady=5)
     rath_json_entry = ttk.Entry(rath_frame)
-    rath_json_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+    # Span 2 columns for the entry
+    rath_json_entry.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky=tk.EW)
 
+    # Run Button (Left)
     rath_run_button = ttk.Button(rath_frame, text="2. Run RathCelon", command=start_rath_thread, style="Accent.TButton")
     rath_run_button.grid(row=1, column=0, columnspan=2, padx=5, pady=10, sticky=tk.EW)
+
+    # Stop Button (Right) - Initially hidden or disabled? Let's pack it next to run if possible, or below.
+    # Actually, let's split the bottom row: Run on Left, Stop on Right
+    rath_run_button.grid_configure(columnspan=1, column=0)
+
+    rath_stop_button = ttk.Button(rath_frame, text="STOP Processing", command=stop_rath_thread, state=tk.DISABLED)
+    rath_stop_button.grid(row=1, column=1, padx=5, pady=10, sticky=tk.EW)
 
 
 # --- Event Handlers (File Dialogs) ---
@@ -109,7 +125,6 @@ def select_project_dir():
     project_entry.insert(0, path)
 
     try:
-        # Changed to look for xlsx
         files = [f for f in os.listdir(path) if f.endswith('.xlsx')]
         if files:
             db_path = os.path.join(path, files[0])
@@ -135,18 +150,11 @@ def select_project_dir():
 def select_database():
     f = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
     if f:
-        # 1. Update the Database Entry
         database_entry.delete(0, tk.END)
         database_entry.insert(0, f)
-
-        # 2. Derive the JSON path (same name, .json extension)
         json_path = os.path.splitext(f)[0] + '.json'
-
-        # 3. Update the Prep Tab JSON Entry
         json_entry.delete(0, tk.END)
         json_entry.insert(0, json_path)
-
-        # 4. Update the RathCelon JSON Entry (Step 2)
         rath_json_entry.delete(0, tk.END)
         rath_json_entry.insert(0, json_path)
 
@@ -185,34 +193,48 @@ def select_rath_json():
         rath_json_entry.insert(0, f)
 
 
+# --- Stop Handler ---
+
+def stop_rath_thread():
+    """Sets the stop event to halt processing."""
+    if messagebox.askyesno("Stop Processing",
+                           "Are you sure you want to stop? Current tasks will complete, but the queue will be cleared."):
+        stop_event.set()
+        utils.set_status("Stopping... Waiting for running workers to finish.")
+
+
 # --- Logic Functions ---
 
 def process_single_dam_rathcelon(dam_dict):
     """Worker for Dask."""
-    
+
     # --- Performance Fix: Force single-threaded libraries ---
-    # Even though Dask manages the processes, we explicitly set these 
-    # to ensure libraries like NumPy don't attempt to spawn their own thread pools.
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
     os.environ["NUMEXPR_NUM_THREADS"] = "1"
-    
+
+    # --- Memory Fix: Limit GDAL Cache per worker ---
+    os.environ['GDAL_CACHEMAX'] = '256'
+
     dam_name = dam_dict.get('name', "Unknown Dam")
     try:
-        # Re-import to ensure visibility in worker process
         from rathcelon.classes import Dam as RD
         dam_i = RD(**dam_dict)
         dam_i.process_dam()
+
+        del dam_i
+        gc.collect()
+
         return True, dam_name, None
     except Exception as e:
+        gc.collect()
         return False, dam_name, str(e)
 
 
 def threaded_prepare_data():
     try:
-        # 1. Get Values
         xlsx_path = database_entry.get()
         flowline_source = flowline_var.get()
         dem_resolution = dd_var.get()
@@ -227,18 +249,13 @@ def threaded_prepare_data():
             return
 
         utils.set_status("Inputs validated. Loading database...")
-
-        # 2. Create directories
         os.makedirs(dem_folder, exist_ok=True)
         os.makedirs(strm_folder, exist_ok=True)
         os.makedirs(results_folder, exist_ok=True)
 
-        # Initialize Database Manager
         db = DatabaseManager(xlsx_path)
 
-        # 3. Handle Data Downloads (NWM/GEOGLOWS)
         hydroshare_id = "88759266f9c74df8b5bb5f52d142ba8e"
-
         ui_dir = os.path.dirname(os.path.realpath(__file__))
         package_root = os.path.dirname(ui_dir)
         data_dir = os.path.join(package_root, 'data')
@@ -279,23 +296,17 @@ def threaded_prepare_data():
                     messagebox.showerror("Download Failed", f"Failed to download VPU map: {e}")
                     return
 
-        # 4. Processing Loop
         total_dams = len(db.sites)
         processed_count = 0
 
-        # Iterate over site IDs in the database
         for i, site_id in enumerate(db.sites['site_id']):
             try:
                 utils.set_status(f"Prep: Dam {site_id} ({i + 1}/{total_dams})...")
 
                 dam = PrepDam(site_id, db)
-
-                # Setup
                 dam.set_streamflow_source(streamflow_source)
                 dam.set_flowline_source(flowline_source)
                 dam.set_output_dir(results_folder)
-
-                # Logic
                 dam.assign_flowlines(strm_folder, tdx_vpu_map)
                 dam.assign_dem(dem_folder, dem_resolution)
 
@@ -303,11 +314,10 @@ def threaded_prepare_data():
                     print(f"Skipping Dam {site_id}: No DEM.")
                     continue
 
-                # Hydrology Checks
                 if streamflow_source == 'National Water Model' and nwm_ds is None:
                     pass
                 else:
-                    dam.create_reach(nwm_ds, tdx_vpu_map)  # Pass both map and ds
+                    dam.create_reach(nwm_ds, tdx_vpu_map)
                     dam.set_dem_baseflow(baseflow_method)
                     dam.set_fatal_flows()
 
@@ -317,13 +327,11 @@ def threaded_prepare_data():
             except Exception as e:
                 print(f"Error prepping Dam {site_id}: {e}")
 
-        # 5. Save Output
         if processed_count > 0:
             utils.set_status("Saving database...")
             db.save()
 
             json_loc = json_entry.get()
-            # If rathcelon_input is not updated, this line below might fail.
             rathcelon_input(
                 xlsx_path,
                 json_loc,
@@ -347,6 +355,13 @@ def threaded_prepare_data():
 
 def threaded_run_rathcelon():
     try:
+        # 1. Reset Stop Event at start
+        stop_event.clear()
+
+        # 2. Toggle Buttons
+        rath_run_button.config(state=tk.DISABLED)
+        rath_stop_button.config(state=tk.NORMAL)
+
         json_loc = rath_json_entry.get()
         if not os.path.exists(json_loc):
             messagebox.showerror("Error", "JSON file not found.")
@@ -356,50 +371,78 @@ def threaded_run_rathcelon():
             data = json.load(f)
 
         dams = data.get("dams", [])
-        total = len(dams)
-        
-        # --- Worker Calculation ---
-        # Get total CPU cores (defaulting to 1 if detection fails)
+        total_dams = len(dams)
+
+        dams_to_process = []
+        skipped_count = 0
+
+        utils.set_status("Checking for existing results...")
+
+        for dam in dams:
+            site_id = str(dam.get("dam_id"))
+            output_dir = dam.get("output_dir")
+            expected_file = os.path.join(output_dir, site_id, "XS", f"{site_id}_Local_XS_Lines.gpkg")
+
+            if os.path.exists(expected_file):
+                skipped_count += 1
+            else:
+                dams_to_process.append(dam)
+
+        count_to_run = len(dams_to_process)
+
+        if count_to_run == 0:
+            utils.set_status(f"All {total_dams} dams are already processed!")
+            messagebox.showinfo("Complete", "All dams in this file have existing results.")
+            return
+
         total_cores = os.cpu_count() or 1
-        # Set workers to total_cores - 1, but ensure at least 1 worker runs
-        worker_count = max(1, int((total_cores - 1)/2))
-        
-        # Configure Dask Cluster
-        utils.set_status(f"Initializing Dask Cluster with {worker_count} workers for {total} dams...")
-        
-        # processes=True: uses separate processes (bypasses GIL)
-        # threads_per_worker=1: one thread per process (prevents library contention)
-        # n_workers: Uses our calculated available_cores - 1
+        worker_count = 1 # max(1, int(total_cores / 3))
+
+        utils.set_status(
+            f"Skipping {skipped_count}. Initializing Dask (Workers: {worker_count}) for {count_to_run} dams...")
+
         with LocalCluster(processes=True, threads_per_worker=1, n_workers=worker_count) as cluster:
             with Client(cluster) as client:
-                
-                # Optional: Show dashboard link in console
-                print(f"Dask Dashboard: {client.dashboard_link}")
-                utils.set_status(f"Processing... (Dashboard: {client.dashboard_link})")
 
-                # Submit all tasks to the cluster
-                # client.map applies the function to the list of inputs in parallel
-                futures = client.map(process_single_dam_rathcelon, dams)
+                print(f"Dask Dashboard: {client.dashboard_link}")
+                utils.set_status(f"Processing {count_to_run} dams... (Dashboard: {client.dashboard_link})")
+
+                futures = client.map(process_single_dam_rathcelon, dams_to_process)
 
                 success_count = 0
-                
-                # Process results as they complete
+                processed_so_far = 0
+
                 for future in as_completed(futures):
+                    # --- STOP CHECK ---
+                    if stop_event.is_set():
+                        client.cancel(futures)  # Attempt to cancel pending tasks
+                        utils.set_status("Processing halted by user.")
+                        break  # Break the monitoring loop
+
                     success, name, err = future.result()
+                    processed_so_far += 1
+
                     if success:
                         success_count += 1
-                        utils.set_status(f"Finished {name} ({success_count}/{total})")
+                        utils.set_status(f"Finished {name} ({processed_so_far}/{count_to_run})")
                     else:
                         utils.set_status(f"Error on {name}: {err}")
 
-        utils.set_status(f"Completed. {success_count} dams processed.")
-        messagebox.showinfo("Success", f"Processed {success_count} dams.")
+        # Check if we exited early
+        if stop_event.is_set():
+            messagebox.showwarning("Stopped", f"Processing stopped by user.\nCompleted this session: {success_count}")
+        else:
+            total_success = success_count + skipped_count
+            utils.set_status(f"Done. Ran {success_count}, Skipped {skipped_count}. Total: {total_success}/{total_dams}")
+            messagebox.showinfo("Success", f"Batch complete.\nRan: {success_count}\nSkipped: {skipped_count}")
 
     except Exception as e:
         utils.set_status(f"Error: {e}")
         messagebox.showerror("Error", str(e))
     finally:
+        # Reset Buttons
         rath_run_button.config(state=tk.NORMAL)
+        rath_stop_button.config(state=tk.DISABLED)
 
 
 # Thread Starters
@@ -409,6 +452,5 @@ def start_prep_thread():
 
 
 def start_rath_thread():
-    rath_run_button.config(state=tk.DISABLED)
+    # Button state is toggled inside the threaded function now
     threading.Thread(target=threaded_run_rathcelon, daemon=True).start()
-    
