@@ -25,6 +25,9 @@ project_entry = None
 database_entry = None
 dem_entry = None
 strm_entry = None
+# --- NEW WIDGET ---
+land_use_entry = None
+# ------------------
 results_entry = None
 json_entry = None
 flowline_var = None
@@ -34,15 +37,15 @@ baseflow_var = None
 prep_run_button = None
 rath_json_entry = None
 rath_run_button = None
-rath_stop_button = None  # <--- New Widget
+rath_stop_button = None
 
 # Global Threading Event for Stopping
-stop_event = threading.Event()  # <--- New Flag
+stop_event = threading.Event()
 
 
 def setup_prep_tab(parent_tab):
     """Constructs the UI for the Prep tab."""
-    global project_entry, database_entry, dem_entry, strm_entry, results_entry
+    global project_entry, database_entry, dem_entry, strm_entry, land_use_entry, results_entry # ADDED land_use_entry
     global json_entry, flowline_var, dd_var, streamflow_var, baseflow_var
     global prep_run_button, rath_json_entry, rath_run_button, rath_stop_button
 
@@ -66,8 +69,9 @@ def setup_prep_tab(parent_tab):
     database_entry = add_path_row(1, "Select Database (.xlsx)", select_database)
     dem_entry = add_path_row(2, "Select DEM Folder", select_dem_dir)
     strm_entry = add_path_row(3, "Select Hydrography Folder", select_strm_dir)
-    results_entry = add_path_row(4, "Select Results Folder", select_results_dir)
-    json_entry = add_path_row(5, "RathCelon Input (.json)", select_json_file)
+    land_use_entry = add_path_row(4, "Select Land Use Folder", select_land_use_dir)
+    results_entry = add_path_row(5, "Select Results Folder", select_results_dir)
+    json_entry = add_path_row(6, "RathCelon Input (.json)", select_json_file)
 
     # Dropdowns
     hydro_frame = ttk.Frame(prep_frame)
@@ -108,7 +112,6 @@ def setup_prep_tab(parent_tab):
     rath_run_button = ttk.Button(rath_frame, text="2. Run RathCelon", command=start_rath_thread, style="Accent.TButton")
     rath_run_button.grid(row=1, column=0, columnspan=2, padx=5, pady=10, sticky=tk.EW)
 
-    # Stop Button (Right) - Initially hidden or disabled? Let's pack it next to run if possible, or below.
     # Actually, let's split the bottom row: Run on Left, Stop on Right
     rath_run_button.grid_configure(columnspan=1, column=0)
 
@@ -140,6 +143,9 @@ def select_project_dir():
         dem_entry.insert(0, os.path.join(path, "DEM"))
         strm_entry.delete(0, tk.END)
         strm_entry.insert(0, os.path.join(path, "STRM"))
+        if land_use_entry:
+            land_use_entry.delete(0, tk.END)
+            land_use_entry.insert(0, os.path.join(path, "LAND"))
         results_entry.delete(0, tk.END)
         results_entry.insert(0, os.path.join(path, "Results"))
         utils.set_status("Project paths loaded.")
@@ -172,6 +178,11 @@ def select_strm_dir():
         strm_entry.delete(0, tk.END)
         strm_entry.insert(0, d)
 
+def select_land_use_dir():
+    d = filedialog.askdirectory()
+    if d:
+        land_use_entry.delete(0, tk.END)
+        land_use_entry.insert(0, d)
 
 def select_results_dir():
     d = filedialog.askdirectory()
@@ -241,6 +252,7 @@ def threaded_prepare_data():
         streamflow_source = streamflow_var.get()
         dem_folder = dem_entry.get()
         strm_folder = strm_entry.get()
+        land_folder = land_use_entry.get() if land_use_entry else None
         results_folder = results_entry.get()
         baseflow_method = baseflow_var.get()
 
@@ -251,6 +263,8 @@ def threaded_prepare_data():
         utils.set_status("Inputs validated. Loading database...")
         os.makedirs(dem_folder, exist_ok=True)
         os.makedirs(strm_folder, exist_ok=True)
+        if land_folder:
+            os.makedirs(land_folder, exist_ok=True)
         os.makedirs(results_folder, exist_ok=True)
 
         db = DatabaseManager(xlsx_path)
@@ -309,6 +323,7 @@ def threaded_prepare_data():
                 dam.set_output_dir(results_folder)
                 dam.assign_flowlines(strm_folder, tdx_vpu_map)
                 dam.assign_dem(dem_folder, dem_resolution)
+                dam.assign_land(dem_folder, land_folder)
 
                 if not any([dam.dem_1m, dam.dem_3m, dam.dem_10m]):
                     print(f"Skipping Dam {site_id}: No DEM.")

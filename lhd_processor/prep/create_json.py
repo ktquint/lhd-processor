@@ -109,6 +109,7 @@ def rathcelon_input(db_path, json_output_path, baseflow_method, nwm_parquet, flo
             "dam_id": int(site_id),
             "flowline": str(site['flowline_path']),
             "dem_dir": str(site['dem_dir']),
+            "land_tif": str(site['land_path']),
             "bathy_use_banks": use_banks,
             "output_dir": str(dam_output_dir),
             "process_stream_network": True,

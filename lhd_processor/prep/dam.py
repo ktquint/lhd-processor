@@ -1,7 +1,10 @@
 import re  # Added for date extraction
+import os
+import glob
 import pandas as pd
 from .hydroinformatics import StreamReach
 from .download_dem import download_dem
+from .download_landuse import download_land_raster
 from .dem_baseflow import est_dem_baseflow
 from .download_flowline import download_nhdplus, download_tdx_hydro
 
@@ -40,6 +43,7 @@ class Dam:
         self.dem_1m = self.site_data.get('dem_1m')
         self.dem_3m = self.site_data.get('dem_3m')
         self.dem_10m = self.site_data.get('dem_10m')
+        self.land_cover = self.site_data.get('land_cover')
         self.flowline_NHD = None
         self.flowline_TDX = self.site_data.get('flowline_path')
 
@@ -101,6 +105,20 @@ class Dam:
                     self.dem_3m = subdir
                 else:
                     self.dem_10m = subdir
+
+    def assign_land(self, dem_dir, land_dir):
+        print(f"Dam {self.site_id}: Assigning Land Use Data...")
+        dem_paths = glob.glob(os.path.join(dem_dir, "*.tif"))
+
+        if not dem_paths:
+            raise FileNotFoundError(f"No .tif files found in {dem_dir}")
+
+        # choose the first match (or change logic to pick a specific one)
+        dem_path = dem_paths[0]
+
+        land_raster = download_land_raster(self.site_id, dem_path, land_dir)
+        self.site_data['land_path'] = land_raster
+        return land_raster
 
     def create_reach(self, nwm_ds=None, tdx_vpu_map=None):
         print(f'Dam {self.site_id}: Creating Stream Reach object...')

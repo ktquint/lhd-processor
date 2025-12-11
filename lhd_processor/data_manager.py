@@ -17,7 +17,7 @@ class DatabaseManager:
             'site_id', 'name', 'latitude', 'longitude', 'weir_length', 'comments',
             'dem_dir', 'flowline_path', 'streamflow_source', 'flowline_source',
             'dem_baseflow', 'P_known', 'output_dir', 'final_resolution',
-            'baseflow_method', 'lidar_date', 'dem_source_info'
+            'baseflow_method', 'lidar_date', 'dem_source_info', 'land_path'
         ]
 
         self.incidents_schema = ['site_id', 'date', 'flow', 'source']
