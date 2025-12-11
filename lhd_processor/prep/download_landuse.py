@@ -17,17 +17,13 @@ except ImportError:
 # --- UTILITY FUNCTIONS ---
 
 def _get_raster_info(dem_tif: str):
-    """
-    Retrieves essential geospatial metadata from a DEM file using rasterio.
-    (Logic adapted from rathcelon/classes.py)
-    """
     with rasterio.open(dem_tif) as dataset:
         geoTransform = dataset.transform
         ncols = dataset.width
         nrows = dataset.height
-        minx = geoTransform.c  # xmin
+        minx = geoTransform.c  # x_min
         dx = geoTransform.a
-        maxy = geoTransform.f  # ymax
+        maxy = geoTransform.f  # y_max
         dy = geoTransform.e
         maxx = minx + dx * ncols
         miny = maxy + dy * nrows
@@ -36,12 +32,16 @@ def _get_raster_info(dem_tif: str):
     return minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection
 
 
-def _get_polygon_geometry(lon_1: float, lat_1: float, lon_2: float, lat_2: float) -> Polygon:
-    """Creates a Shapely Polygon from two corner coordinates (in EPSG:4326)."""
-    return Polygon([[min(lon_1, lon_2), min(lat_1, lat_2)],
-                    [min(lon_1, lon_2), max(lat_1, lat_2)],
-                    [max(lon_1, lon_2), max(lat_1, lat_2)],
-                    [max(lon_1, lon_2), min(lat_1, lat_2)]])
+def _get_polygon_geometry_from_bounds(minx: float, miny: float, maxx: float, maxy: float, crs: CRS) -> gpd.GeoSeries:
+    """Creates a GeoSeries containing a Shapely Polygon from bounds in the native CRS."""
+    geom = Polygon([
+        [minx, miny],
+        [minx, maxy],
+        [maxx, maxy],
+        [maxx, miny]
+    ])
+    # Returns a GeoSeries with the correct CRS.
+    return gpd.GeoSeries([geom], crs=crs)
 
 
 def _download_and_save_tile(url: str, out_fn: Path) -> str:
@@ -56,9 +56,11 @@ def _download_and_save_tile(url: str, out_fn: Path) -> str:
     return str(out_fn)
 
 
-def _download_esa_land_cover(geom: Polygon, output_dir: str, dem_crs: CRS, dem_proj_wkt: str,
-                             year: int = 2021) -> str | None:
-    """Downloads and merges ESA WorldCover tiles that intersect the given geometry."""
+def _download_esa_land_cover(geom: Polygon, output_dir: str, dem_crs: CRS, year: int = 2021) -> str | None:
+    """
+    Downloads and merges ESA WorldCover tiles that intersect the given geometry.
+    The input `geom` is a shapely Polygon object in the CRS specified by `dem_crs`.
+    """
 
     # ... (file path and initial check setup)
     land_cover_file_name = "merged_ESA_LC.tif"
@@ -74,20 +76,23 @@ def _download_esa_land_cover(geom: Polygon, output_dir: str, dem_crs: CRS, dem_p
     s3_url_prefix = "https://esa-worldcover.s3.eu-central-1.amazonaws.com"
     grid_url = f'{s3_url_prefix}/esa_worldcover_grid.geojson'
 
-    # Reproject the geometry to WGS 84 if DEM is not already in it, to align with ESA grid
+    # --- FIX: Reproject the input geometry (which is in dem_crs) to WGS84 ---
     wgs84_crs = CRS.from_epsg(4326)
 
+    # 1. Check if reprojection is needed
     if dem_crs != wgs84_crs:
+        print(f"Reprojecting DEM bounds from {dem_crs.to_string()} to EPSG:4326 for spatial query.")
         transformer = Transformer.from_crs(dem_crs, wgs84_crs, always_xy=True)
 
-        # --- ROBUST FIX: Define a nested function for transformation ---
-        # This resolves the 'unfilled parameters' error by correctly matching the
-        # function signature expected by shapely.ops.transform (which passes single points).
+        # Function to transform points (required by shapely.ops.transform)
         def reproject_func(x, y, z=None):
             return transformer.transform(x, y, z)
 
-        geom = transform(reproject_func, geom)
-        # --- END FIX ---
+        # Transform the Polygon geometry
+        geom_wgs84 = transform(reproject_func, geom)
+    else:
+        geom_wgs84 = geom
+    # --- END FIX ---
 
     try:
         grid = gpd.read_file(grid_url, crs="epsg:4326")
@@ -95,12 +100,14 @@ def _download_esa_land_cover(geom: Polygon, output_dir: str, dem_crs: CRS, dem_p
         print(f"CRITICAL ERROR: Failed to load ESA grid file: {e}")
         return None
 
-    tiles = grid[grid.intersects(geom)]
+    # Use the correctly reprojected WGS84 geometry for intersection
+    tiles = grid[grid.intersects(geom_wgs84)]
 
     if tiles.empty:
         print("WARNING: No ESA WorldCover tiles intersect the bounding box.")
         return None
 
+    # ... (rest of the function is unchanged, handles download and merge)
     version = {2020: 'v100', 2021: 'v200'}[year]
 
     temp_downloaded_tiles = []
@@ -144,11 +151,12 @@ def _download_esa_land_cover(geom: Polygon, output_dir: str, dem_crs: CRS, dem_p
 
 
 def _create_aligned_land_raster(
-        raw_lc_tif: str,
-        aligned_land_tif: str,
-        proj_win_extents: list,
-        ncols: int,
-        nrows: int
+# ... (function remains unchanged)
+    raw_lc_tif: str,
+    aligned_land_tif: str,
+    proj_win_extents: list,
+    ncols: int,
+    nrows: int
 ):
     """
     Clips and resamples the raw merged Land Cover TIFF (raw_lc_tif) to match
@@ -196,8 +204,6 @@ def download_land_raster(lhd_id: int, dem_path: str, land_dir: str):
         return final_land_tif_path
 
     # --- INTERMEDIATE RAW FILE LOCATION ---
-    # The raw merged ESA file is saved in a 'raw_esa' subdirectory inside land_dir
-    # to separate it from the final processed raster.
     raw_esa_dir = os.path.join(land_dir, 'raw_esa')
     os.makedirs(raw_esa_dir, exist_ok=True)
 
@@ -209,13 +215,16 @@ def download_land_raster(lhd_id: int, dem_path: str, land_dir: str):
     proj_win_extents = [minx, maxy, maxx, miny]
     dem_crs = CRS.from_wkt(Rast_Projection_WKT)
 
+    # Use the native bounds and CRS to create the polygon
+    dem_gs = _get_polygon_geometry_from_bounds(minx, miny, maxx, maxy, dem_crs)
+    dem_polygon = dem_gs.iloc[0]
+
     # 3. DOWNLOAD OR REUSE RAW ESA DATA
-    # _download_esa_land_cover handles the download/reuse/merge logic
+    # _download_esa_land_cover now handles reprojection internally
     raw_lc_tif_path = _download_esa_land_cover(
-        geom=_get_polygon_geometry(minx, miny, maxx, maxy),
+        geom=dem_polygon,
         output_dir=raw_esa_dir,
         dem_crs=dem_crs,
-        dem_proj_wkt=Rast_Projection_WKT
     )
 
     if not raw_lc_tif_path:
@@ -231,12 +240,23 @@ def download_land_raster(lhd_id: int, dem_path: str, land_dir: str):
         nrows=nrows
     )
 
-    # 5. CLEAN UP INTERMEDIATE RAW TILE FILES
+    # 5. CLEAN UP INTERMEDIATE RAW TILE FILES (Including the raw merged file)
     print("Cleaning up individual downloaded ESA tiles...")
+    merged_esa_filename = "merged_ESA_LC.tif"
+    raw_lc_tif_path_full = os.path.join(raw_esa_dir, merged_esa_filename)
+
     for item in os.listdir(raw_esa_dir):
         item_path = os.path.join(raw_esa_dir, item)
         # Delete only the individual tile files (those ending in .tif but not merged_ESA_LC.tif)
-        if item.endswith('.tif') and item != 'merged_ESA_LC.tif':
+        if item.endswith('.tif') and item != merged_esa_filename:
             os.remove(item_path)
+
+    # Delete the large intermediate raw merged file
+    if os.path.exists(raw_lc_tif_path_full):
+        try:
+            os.remove(raw_lc_tif_path_full)
+            print(f"Removed intermediate raw merged file: {raw_lc_tif_path_full}")
+        except Exception as e:
+            print(f"Warning: Could not remove {raw_lc_tif_path_full}: {e}")
 
     return final_land_tif_path

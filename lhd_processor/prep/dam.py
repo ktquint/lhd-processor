@@ -106,15 +106,19 @@ class Dam:
                 else:
                     self.dem_10m = subdir
 
-    def assign_land(self, dem_dir, land_dir):
+    def assign_land(self, dem_dir_parent, land_dir):
         print(f"Dam {self.site_id}: Assigning Land Use Data...")
-        dem_paths = glob.glob(os.path.join(dem_dir, "*.tif"))
 
-        if not dem_paths:
-            raise FileNotFoundError(f"No .tif files found in {dem_dir}")
+        # Construct the expected path to the final merged DEM file.
+        dem_name = f"{self.site_id}_MERGED_DEM.tif"
 
-        # choose the first match (or change logic to pick a specific one)
-        dem_path = dem_paths[0]
+        # The final merged DEM is expected to be in a subdirectory named after the site_id
+        # located inside the main DEM directory (dem_dir_parent).
+        dam_dem_subdir = os.path.join(dem_dir_parent, str(self.site_id))
+        dem_path = os.path.join(dam_dem_subdir, dem_name)
+
+        if not os.path.exists(dem_path):
+            raise FileNotFoundError(f"Merged DEM file not found at expected path: {dem_path}")
 
         land_raster = download_land_raster(self.site_id, dem_path, land_dir)
         self.site_data['land_path'] = land_raster
