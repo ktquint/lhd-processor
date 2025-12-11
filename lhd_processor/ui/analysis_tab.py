@@ -37,27 +37,29 @@ def setup_analysis_tab(parent_tab):
     path_frame.pack(pady=10, padx=10, fill="x")
     path_frame.columnconfigure(1, weight=1)
 
-    ttk.Button(path_frame, text="Select Database (.xlsx)", command=select_db).grid(row=0, column=0, padx=5, pady=5,
-                                                                                   sticky=tk.W)
+    # Row 0: Database
+    ttk.Label(path_frame, text="Database (.xlsx):").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
     db_entry = ttk.Entry(path_frame)
     db_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+    ttk.Button(path_frame, text="Select...", command=select_db).grid(row=0, column=2, padx=5, pady=5)
 
-    ttk.Button(path_frame, text="Select Results Folder", command=select_res).grid(row=1, column=0, padx=5, pady=5,
-                                                                                  sticky=tk.W)
+    # Row 1: Results Folder
+    ttk.Label(path_frame, text="Results Folder:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
     res_entry = ttk.Entry(path_frame)
     res_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
+    ttk.Button(path_frame, text="Select...", command=select_res).grid(row=1, column=2, padx=5, pady=5)
 
+    # Row 2: Streamflow Source
     ttk.Label(path_frame, text="Streamflow Source:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
     model_var = tk.StringVar(value="National Water Model")
-    ttk.Combobox(path_frame, textvariable=model_var, values=("USGS", "GEOGLOWS", "National Water Model")).grid(row=2,
-                                                                                                               column=1,
-                                                                                                               padx=5,
-                                                                                                               pady=5,
-                                                                                                               sticky=tk.EW)
+    # Columnspan=2 to span across the Entry and Button columns from rows above
+    ttk.Combobox(path_frame, textvariable=model_var, values=("USGS", "GEOGLOWS", "National Water Model")).grid(
+        row=2, column=1, columnspan=2, padx=5, pady=5, sticky=tk.EW)
 
+    # Row 3: Run Button
     run_btn = ttk.Button(path_frame, text="3. Analyze & Save All Dam Data", command=start_analysis,
                          style="Accent.TButton")
-    run_btn.grid(row=3, column=0, columnspan=2, padx=5, pady=10, sticky=tk.EW)
+    run_btn.grid(row=3, column=0, columnspan=3, padx=5, pady=10, sticky=tk.EW)
 
     # --- Figure Frame ---
     fig_frame = ttk.LabelFrame(parent_tab, text="Select Figures to Display")

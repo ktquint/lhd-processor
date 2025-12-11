@@ -25,9 +25,7 @@ project_entry = None
 database_entry = None
 dem_entry = None
 strm_entry = None
-# --- NEW WIDGET ---
 land_use_entry = None
-# ------------------
 results_entry = None
 json_entry = None
 flowline_var = None
@@ -45,7 +43,7 @@ stop_event = threading.Event()
 
 def setup_prep_tab(parent_tab):
     """Constructs the UI for the Prep tab."""
-    global project_entry, database_entry, dem_entry, strm_entry, land_use_entry, results_entry # ADDED land_use_entry
+    global project_entry, database_entry, dem_entry, strm_entry, land_use_entry, results_entry
     global json_entry, flowline_var, dd_var, streamflow_var, baseflow_var
     global prep_run_button, rath_json_entry, rath_run_button, rath_stop_button
 
@@ -55,23 +53,38 @@ def setup_prep_tab(parent_tab):
 
     paths_frame = ttk.Frame(prep_frame)
     paths_frame.pack(pady=5, padx=10, fill="x")
+
+    # Configure columns: Label (0), Entry (1-Expands), Button (2)
     paths_frame.columnconfigure(1, weight=1)
 
-    # Helper to make rows
-    def add_path_row(row, label, cmd):
-        btn = ttk.Button(paths_frame, text=label, command=cmd)
-        btn.grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
+    # Helper to make rows with Label -> Entry -> Button
+    # CHANGED: Added must_exist parameter
+    def add_path_row(row, label_text, cmd, is_file=False, must_exist=True):
+        # 1. Label
+        ttk.Label(paths_frame, text=label_text).grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
+
+        # 2. Entry (Editable)
         entry = ttk.Entry(paths_frame)
         entry.grid(row=row, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        # CHANGED: Passed must_exist to the util
+        utils.bind_path_validation(entry, is_file=is_file, must_exist=must_exist)
+
+        # 3. Browse Button
+        ttk.Button(paths_frame, text="Select...", command=cmd).grid(row=row, column=2, padx=5, pady=5)
+
         return entry
 
-    project_entry = add_path_row(0, "Select Project Folder", select_project_dir)
-    database_entry = add_path_row(1, "Select Database (.xlsx)", select_database)
-    dem_entry = add_path_row(2, "Select DEM Folder", select_dem_dir)
-    strm_entry = add_path_row(3, "Select Hydrography Folder", select_strm_dir)
-    land_use_entry = add_path_row(4, "Select Land Use Folder", select_land_use_dir)
-    results_entry = add_path_row(5, "Select Results Folder", select_results_dir)
-    json_entry = add_path_row(6, "RathCelon Input (.json)", select_json_file)
+    # --- INPUTS (Strict Check: Red if missing) ---
+    project_entry = add_path_row(0, "Project Folder:", select_project_dir, is_file=False, must_exist=True)
+    database_entry = add_path_row(1, "Database (.xlsx):", select_database, is_file=True, must_exist=True)
+
+    # --- OUTPUTS (Loose Check: Blue if missing, as they will be created) ---
+    dem_entry = add_path_row(2, "DEM Folder:", select_dem_dir, is_file=False, must_exist=False)
+    strm_entry = add_path_row(3, "Hydrography Folder:", select_strm_dir, is_file=False, must_exist=False)
+    land_use_entry = add_path_row(4, "Land Use Folder:", select_land_use_dir, is_file=False, must_exist=False)
+    results_entry = add_path_row(5, "Results Folder:", select_results_dir, is_file=False, must_exist=False)
+    json_entry = add_path_row(6, "RathCelon Input (.json):", select_json_file, is_file=True, must_exist=False)
 
     # Dropdowns
     hydro_frame = ttk.Frame(prep_frame)
@@ -91,6 +104,11 @@ def setup_prep_tab(parent_tab):
     baseflow_var = add_combo(3, "Baseflow Estimation:",
                              ("WSE and LiDAR Date", "WSE and Median Daily Flow", "2-yr Flow and Bank Estimation"),
                              "WSE and LiDAR Date")
+    baseflow_combo = hydro_frame.winfo_children()[-1]
+
+    utils.ToolTip(baseflow_combo, "Choose how to estimate baseflow:\n"
+                                  "- LiDAR Date: Uses flow on the specific day the LiDAR was flown.\n"
+                                  "- Median: Uses long-term median daily flow.")
 
     prep_run_button = ttk.Button(prep_frame, text="1. Prepare Data & Create Input File", command=start_prep_thread,
                                  style="Accent.TButton")
@@ -99,24 +117,32 @@ def setup_prep_tab(parent_tab):
     # --- Step 2 Frame ---
     rath_frame = ttk.LabelFrame(parent_tab, text="Step 2: Run RathCelon")
     rath_frame.pack(pady=10, padx=10, fill="x")
-    rath_frame.columnconfigure(0, weight=1)  # Allow expansion
-    rath_frame.columnconfigure(1, weight=1)  # Allow expansion
 
-    ttk.Button(rath_frame, text="Select Input File (.json)", command=select_rath_json).grid(row=0, column=0, padx=5,
-                                                                                            pady=5)
+    # Configure columns for Label/Entry/Button
+    rath_frame.columnconfigure(1, weight=1)
+
+    # Row 0: Input File Selection (Strict Check because this is an INPUT for step 2)
+    ttk.Label(rath_frame, text="Input File (.json):").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+
     rath_json_entry = ttk.Entry(rath_frame)
-    # Span 2 columns for the entry
-    rath_json_entry.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+    rath_json_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
 
-    # Run Button (Left)
-    rath_run_button = ttk.Button(rath_frame, text="2. Run RathCelon", command=start_rath_thread, style="Accent.TButton")
-    rath_run_button.grid(row=1, column=0, columnspan=2, padx=5, pady=10, sticky=tk.EW)
+    # Bind validation manually here since it's outside the helper loop
+    utils.bind_path_validation(rath_json_entry, is_file=True, must_exist=True)
 
-    # Actually, let's split the bottom row: Run on Left, Stop on Right
-    rath_run_button.grid_configure(columnspan=1, column=0)
+    ttk.Button(rath_frame, text="Select...", command=select_rath_json).grid(row=0, column=2, padx=5, pady=5)
 
-    rath_stop_button = ttk.Button(rath_frame, text="STOP Processing", command=stop_rath_thread, state=tk.DISABLED)
-    rath_stop_button.grid(row=1, column=1, padx=5, pady=10, sticky=tk.EW)
+    # Row 1: Action Buttons (Using a sub-frame to keep them centered/expanded independently)
+    btn_frame = ttk.Frame(rath_frame)
+    btn_frame.grid(row=1, column=0, columnspan=3, sticky=tk.EW, pady=10)
+    btn_frame.columnconfigure(0, weight=1)
+    btn_frame.columnconfigure(1, weight=1)
+
+    rath_run_button = ttk.Button(btn_frame, text="2. Run RathCelon", command=start_rath_thread, style="Accent.TButton")
+    rath_run_button.grid(row=0, column=0, padx=5, sticky=tk.EW)
+
+    rath_stop_button = ttk.Button(btn_frame, text="STOP Processing", command=stop_rath_thread, state=tk.DISABLED)
+    rath_stop_button.grid(row=0, column=1, padx=5, sticky=tk.EW)
 
 
 # --- Event Handlers (File Dialogs) ---
