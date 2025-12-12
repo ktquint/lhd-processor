@@ -70,21 +70,22 @@ def bind_path_validation(entry_widget, is_file=True, must_exist=True):
     Binds an event to an Entry widget.
 
     Colors:
-    - GREEN: Path exists (Good).
+    - WHITE: Path exists, acceptable missing output, or empty (High contrast neutral).
     - RED: Path is missing, but is required (Error).
-    - BLUE: Path is missing, but will be created (Info).
 
     Args:
         entry_widget: The tkinter Entry widget.
         is_file (bool): True if checking for a file, False for a directory.
-        must_exist (bool): If True, missing path turns RED. If False, missing path turns BLUE.
+        must_exist (bool): If True, missing path turns RED. If False, missing path stays neutral (white).
     """
 
     def check_path(event=None):
         path = entry_widget.get()
+        # Default to neutral color (white for dark theme visibility)
+        neutral_color = "white"
+
         if not path:
-            # Neutral color if empty
-            entry_widget.config(foreground="black")
+            entry_widget.config(foreground=neutral_color)
             return
 
         # 1. Check if it currently exists on disk
@@ -95,16 +96,16 @@ def bind_path_validation(entry_widget, is_file=True, must_exist=True):
 
         # 2. Apply Logic/Colors
         if exists:
-            # It exists, so it's always valid
-            entry_widget.config(foreground="green")
+            # Path exists: neutral color
+            entry_widget.config(foreground=neutral_color)
         else:
             # It does NOT exist
             if must_exist:
                 # Critical Error: It MUST exist (e.g., Input Data)
                 entry_widget.config(foreground="red")
             else:
-                # Acceptable: It will be created (e.g., Output Folder)
-                entry_widget.config(foreground="black")
+                # Acceptable missing output: neutral color
+                entry_widget.config(foreground=neutral_color)
 
     # Trigger on typing (KeyRelease) and leaving the box (FocusOut)
     entry_widget.bind("<KeyRelease>", check_path)

@@ -57,8 +57,8 @@ def setup_analysis_tab(parent_tab):
         row=2, column=1, columnspan=2, padx=5, pady=5, sticky=tk.EW)
 
     # Row 3: Run Button
-    run_btn = ttk.Button(path_frame, text="3. Analyze & Save All Dam Data", command=start_analysis,
-                         style="Accent.TButton")
+    # MODIFIED: Removed style="Accent.TButton" to ensure consistent font size
+    run_btn = ttk.Button(path_frame, text="3. Analyze & Save All Dam Data", command=start_analysis)
     run_btn.grid(row=3, column=0, columnspan=3, padx=5, pady=10, sticky=tk.EW)
 
     # --- Figure Frame ---
@@ -83,8 +83,8 @@ def setup_analysis_tab(parent_tab):
     chk_bar = tk.BooleanVar(value=False);
     ttk.Checkbutton(fig_frame, text="Generate Bar Chart (All)", variable=chk_bar).grid(row=3, column=1, sticky=tk.W)
 
-    display_btn = ttk.Button(parent_tab, text="4. Generate & Display Figures", command=start_display,
-                             style="Accent.TButton")
+    # MODIFIED: Removed style="Accent.TButton" to ensure consistent font size
+    display_btn = ttk.Button(parent_tab, text="4. Generate & Display Figures", command=start_display)
     display_btn.pack(fill="x", padx=10, pady=10)
 
     # Initialize Carousel (creates the hidden frame)
@@ -273,6 +273,7 @@ def threaded_analysis():
 
     except Exception as e:
         utils.set_status(f"Error: {e}")
+        messagebox.showerror("Error", str(e))
     finally:
         run_btn.config(state=tk.NORMAL)
 
