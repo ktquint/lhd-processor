@@ -204,8 +204,8 @@ def solve_weir_geometry(Q_input, L_input, YT_input, Wse_input, g=9.81):
 
         return Q_calc - Q_input
 
-    # Solve for H (using 1.0 as a starting guess)
-    H_solution = fsolve(objective_function, x0=1.0)[0]
+    # Solve for H (using 0.1 as a starting guess)
+    H_solution = fsolve(objective_function, x0=0.1)[0]
     P_solution = total_height_constant - H_solution
 
     return H_solution, P_solution

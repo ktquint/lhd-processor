@@ -5,6 +5,7 @@ from tkinter import ttk, filedialog, messagebox
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from dask.distributed import Client, LocalCluster, as_completed
 
 # Relative imports
 from ..analysis.classes import Dam as AnalysisDam
@@ -135,6 +136,22 @@ def update_dropdown():
         utils.set_status(f"Error updating dropdown: {e}")
 
 
+def process_single_dam_analysis(dam_id, xlsx_path, res_dir):
+    """Worker function to analyze one dam in a separate process."""
+    try:
+        from ..analysis.classes import Dam as AnalysisDam
+        from ..data_manager import DatabaseManager
+
+        # Initialize a fresh manager and dam object for this process
+        db = DatabaseManager(xlsx_path)
+        dam = AnalysisDam(dam_id, db, est_dam=True, base_results_dir=res_dir)
+
+        # The Dam __init__ already performs the analysis and updates the db object
+        # We return the updated data to be merged in the main thread
+        return True, dam_id, dam.site_data, None
+    except Exception as e:
+        return False, dam_id, None, str(e)
+
 # --- Helpers ---
 def generate_summary_charts(db_path):
     figures_list = []
@@ -227,53 +244,51 @@ def generate_summary_charts(db_path):
 
 # --- Threaded Logic ---
 
+from dask.distributed import Client, LocalCluster, as_completed
+
+
 def threaded_analysis():
     try:
         xlsx_path = db_entry.get()
         res_dir = res_entry.get()
-        model = model_var.get()
 
-        # Initialize DB
         db = DatabaseManager(xlsx_path)
-
-        # Filter for successful runs
-        valid_ids = []
-        for site_id in db.sites['site_id']:
-            str_id = str(site_id)
-            if os.path.exists(os.path.join(res_dir, str_id, "VDT", f"{str_id}_Local_VDT_Database.gpkg")):
-                valid_ids.append(site_id)
+        valid_ids = [site_id for site_id in db.sites['site_id']
+                     if os.path.exists(os.path.join(res_dir, str(site_id), "VDT"))]
 
         total = len(valid_ids)
         if total == 0:
             utils.set_status("No processed dams found.")
             return
 
-        for i, dam_id in enumerate(valid_ids):
-            utils.set_status(f"Analyzing Dam {dam_id} ({i + 1}/{total})...")
-            try:
-                # Pass DB Manager
-                dam = AnalysisDam(dam_id, db, est_dam=True, base_results_dir=res_dir)
+        # Start a local cluster
+        worker_count = (os.cpu_count()-1) or 1
+        with LocalCluster(n_workers=worker_count, threads_per_worker=1) as cluster:
+            with Client(cluster) as client:
+                utils.set_status(f"Parallelizing analysis across {worker_count} workers...")
 
-                # Generate plots (logic remains same)
-                # for xs in dam.cross_sections: plt.close(xs.plot_cross_section())
-                # for xs in dam.cross_sections[1:]: plt.close(xs.create_combined_fig()); plt.close(
-                #     xs.create_combined_fdc())
-                # plt.close(dam.plot_map())
-                # plt.close(dam.plot_water_surface())
+                # Map the worker function to the list of IDs
+                futures = client.map(process_single_dam_analysis, valid_ids,
+                                     xlsx_path=xlsx_path, res_dir=res_dir)
 
-            except Exception as e:
-                print(f"Skipping Dam {dam_id}: {e}")
+                processed_count = 0
+                for future in as_completed(futures):
+                    success, dam_id, site_data, err = future.result()
+                    processed_count += 1
 
-        # Save DB at the end
-        utils.set_status("Saving analysis results...")
+                    if success:
+                        # Update the main thread's database manager with the results
+                        db.update_site_data(dam_id, site_data)
+                        utils.set_status(f"Analyzed Dam {dam_id} ({processed_count}/{total})")
+                    else:
+                        print(f"Error on Dam {dam_id}: {err}")
+
+        utils.set_status("Saving all results to database...")
         db.save()
-
-        utils.set_status("Analysis complete.")
-        messagebox.showinfo("Success", "Analysis complete.")
-
+        utils.set_status("Results saved.")
+        messagebox.showinfo("Success", "Parallel analysis complete.")
     except Exception as e:
-        utils.set_status(f"Error: {e}")
-        messagebox.showerror("Error", str(e))
+        utils.set_status(f"Analysis failed: {e}")
     finally:
         run_btn.config(state=tk.NORMAL)
 

@@ -14,9 +14,9 @@ from matplotlib_scalebar.scalebar import ScaleBar
 # Internal imports
 from .hydraulics import (solve_weir_geometry,
                          solve_y2_jump,
+                         weir_H,
                          compute_y_flip,
                          solve_y1_downstream,
-                         compute_flip_and_conjugate,
                          rating_curve_intercept)
 from .utils import (merge_arc_results,
                     merge_databases,
@@ -73,10 +73,10 @@ class CrossSection:
                 x_clean.append(xi)
                 y_clean.append(yi)
 
-        self.elevation = y_clean
+        self.elevation = np.array(y_clean)
         self.bed_elevation = min(y_clean) if y_clean else 0
         self.elevation_shifted = self.elevation - self.bed_elevation
-        self.lateral = x_clean
+        self.lateral = np.array(x_clean)
 
         # Determine wse intersection
         wse_left, wse_lat_left = [], []
@@ -286,15 +286,34 @@ class Dam:
 
             if i > 0:
                 if est_dam:
-                    delta_wse = xs.wse - self.cross_sections[0].wse
+                    delta_wse = self.cross_sections[0].wse - xs.wse
                     y_i = xs.wse - xs.bed_elevation
+                    # --- DEBUG PRINTS ---
+                    print(f"\n[DEBUG] Dam {self.id} | Cross-Section {i}")
+                    print(f"  - Delta WSE: {delta_wse:.4f} m")
+                    print(f"  - Tailwater Depth (y_t): {y_i:.4f} m")
+                    print(f"  - Baseflow (Q): {self.baseflow:.4f} cms")
+                    print(f"  - Weir Length (L): {self.weir_length:.2f} m")
+                    # --------------------
                     try:
-                        H_i, P_i = solve_weir_geometry(self.baseflow, self.weir_length,
-                                                       y_i, delta_wse)
+                        print(f"\n[DEBUG] Dam {self.id} | Cross-Section {i}")
+                        H_i, P_i = solve_weir_geometry(self.baseflow, self.weir_length, y_i, delta_wse)
+                        print(f"\n  - Dam Height (P): {P_i} m")
+                        print(f"\n  - Weir Head (H): {H_i} m")
+
+                        # Calculate y1 to check for drowning
+                        y_1 = solve_y1_downstream(self.baseflow, H_i, P_i, self.weir_length,
+                                                  xs.lateral, xs.elevation_shifted)
+
+                        if y_1 > P_i:
+                            raise ValueError(f"Drowned condition: y1 ({y_1:.2f}) is greater than P ({P_i:.2f})")
+
                         xs.set_dam_height(P_i)
                         xs.set_head(H_i)
                         xs_info['P_height'] = P_i
-                    except:
+
+                    except Exception as e:
+                        print(f"Skipping Dam {self.id} analysis: {e}")
                         xs_info['P_height'] = None
                 else:
                     known_p = self.site_data.get('P_known', 2.0)
@@ -310,13 +329,16 @@ class Dam:
                         pass
 
                 for _, inc_row in self.incidents_df.iterrows():
-                    flow = inc_row['flow']
+                    Q = inc_row['flow']
                     date = inc_row['date']
 
-                    if pd.notna(flow) and xs.P:
+                    if pd.notna(Q) and xs.P:
                         try:
-                            y_t = xs.a * flow ** xs.b
-                            y_flip, y_2 = compute_flip_and_conjugate(flow, self.weir_length, xs.P)
+                            y_t = xs.a * Q ** xs.b
+                            H = weir_H(Q, xs.L, xs.P)
+                            y_1 = solve_y1_downstream(Q, H, xs.P, xs.L, xs.lateral, xs.elevation_shifted)
+                            y_2 = solve_y2_jump(Q, y_1, xs.lateral, xs.elevation_shifted)
+                            y_flip = compute_y_flip(Q, xs.L, xs.P)
                             jump = hydraulic_jump_type(y_2, y_t, y_flip)
 
                             hydro_results_list.append({
