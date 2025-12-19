@@ -98,8 +98,8 @@ def setup_prep_tab(parent_tab):
         cb.grid(row=row, column=1, padx=5, pady=5, sticky=tk.EW)
         return var
 
-    flowline_var = add_combo(0, "Flowline Source:", ("NHDPlus", "GEOGLOWS"), "NHDPlus")
-    dd_var = add_combo(1, "DEM Resolution:", ("1 m", "1/9 arc-second (~3 m)", "1/3 arc-second (~10 m)"), "1 m")
+    dd_var = add_combo(0, "DEM Resolution:", ("1 m", "1/9 arc-second (~3 m)", "1/3 arc-second (~10 m)"), "1 m")
+    flowline_var = add_combo(1, "Flowline Source:", ("NHDPlus", "GEOGLOWS"), "NHDPlus")
     streamflow_var = add_combo(2, "Streamflow Source:", ("National Water Model", "GEOGLOWS"), "National Water Model")
     baseflow_var = add_combo(3, "Baseflow Estimation:",
                              ("WSE and LiDAR Date", "WSE and Median Daily Flow", "2-yr Flow and Bank Estimation"),
@@ -438,7 +438,7 @@ def threaded_run_rathcelon():
             return
 
         total_cores = os.cpu_count() or 1
-        worker_count = 1 # max(1, int(total_cores / 3))
+        worker_count = 1 # max(1, int(total_cores/2))
 
         utils.set_status(
             f"Skipping {skipped_count}. Initializing Dask (Workers: {worker_count}) for {count_to_run} dams...")

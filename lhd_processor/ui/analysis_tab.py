@@ -255,11 +255,11 @@ def threaded_analysis():
                 dam = AnalysisDam(dam_id, db, est_dam=True, base_results_dir=res_dir)
 
                 # Generate plots (logic remains same)
-                for xs in dam.cross_sections: plt.close(xs.plot_cross_section())
-                for xs in dam.cross_sections[1:]: plt.close(xs.create_combined_fig()); plt.close(
-                    xs.create_combined_fdc())
-                plt.close(dam.plot_map())
-                plt.close(dam.plot_water_surface())
+                # for xs in dam.cross_sections: plt.close(xs.plot_cross_section())
+                # for xs in dam.cross_sections[1:]: plt.close(xs.create_combined_fig()); plt.close(
+                #     xs.create_combined_fdc())
+                # plt.close(dam.plot_map())
+                # plt.close(dam.plot_water_surface())
 
             except Exception as e:
                 print(f"Skipping Dam {dam_id}: {e}")

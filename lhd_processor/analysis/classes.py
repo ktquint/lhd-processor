@@ -12,12 +12,16 @@ from matplotlib.ticker import FixedLocator
 from matplotlib_scalebar.scalebar import ScaleBar
 
 # Internal imports
-from .hydraulics import compute_flip_and_conjugate, dam_height
+from .hydraulics import (solve_weir_geometry,
+                         solve_y2_jump,
+                         compute_y_flip,
+                         solve_y1_downstream,
+                         compute_flip_and_conjugate,
+                         rating_curve_intercept)
 from .utils import (merge_arc_results,
                     merge_databases,
                     hydraulic_jump_type,
                     round_sigfig,
-                    rating_curve_intercept,
                     get_prob_from_Q)
 
 
@@ -71,6 +75,7 @@ class CrossSection:
 
         self.elevation = y_clean
         self.bed_elevation = min(y_clean) if y_clean else 0
+        self.elevation_shifted = self.elevation - self.bed_elevation
         self.lateral = x_clean
 
         # Determine wse intersection
@@ -91,27 +96,35 @@ class CrossSection:
         self.water_elevation = wse_left[::-1] + wse_right
         self.water_lateral = wse_lat_left[::-1] + wse_lat_right
         self.P = None
+        self.H = None
 
     def set_dam_height(self, P):
         self.P = P
 
-    def plot_cross_section(self):
-        fig, ax = plt.subplots()
-        ax.plot(self.lateral, self.elevation, color='black', label=f'Downstream Slope: {self.slope}')
+    def set_head(self, H):
+        self.H = H
+
+    def plot_cross_section(self, save=True):
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(self.lateral, self.elevation, color='black', label='Cross-Section with Bathymetry Estimation')
         ax.plot(self.water_lateral, self.water_elevation, color='cyan', linestyle='--',
                 label=f'Water Surface Elevation: {round(self.wse, 1)} m')
         ax.set_xlim(-1.5 * self.L, 1.5 * self.L)
         ax.set_xlabel('Lateral Distance (m)')
         ax.set_ylabel('Elevation (m)')
-        ax.set_title(f'{self.location} Cross-Section {self.distance} meters from LHD No. {self.id}')
+        # ax.set_title(f'{self.location} Cross-Section {self.distance} meters from LHD No. {self.id}')
+        ax.set_title(f'Downstream Slope: {self.slope}')
         ax.legend(loc='upper right')
 
-        fname = f"{'US' if self.index == 0 else 'DS'}_XS_{self.index if self.index > 0 else 'LHD'}_{self.id}.png"
-        if self.index == 0:
-            fname = f"US_XS_LHD_{self.id}.png"
+        if save:
+            fname = f"{'US' if self.index == 0 else 'DS'}_XS_{self.index if self.index > 0 else 'LHD'}_{self.id}.png"
+            if self.index == 0:
+                fname = f"US_XS_LHD_{self.id}.png"
 
-        fig.savefig(os.path.join(self.fig_dir, fname))
-        return fig
+            fig.savefig(os.path.join(self.fig_dir, fname), dpi=300, bbox_inches='tight')
+            return fig
+        else:
+            return None
 
     def create_rating_curve(self):
         x = np.linspace(0.01, self.max_Q, 100)
@@ -126,9 +139,11 @@ class CrossSection:
         Y_Conjugates = []
 
         for Q in Qs:
-            Y_Flip, Y_Conj = compute_flip_and_conjugate(Q, self.L, self.P)
+            Y_Flip = compute_y_flip(Q, self.L, self.P)
+            Y_Conj1 = solve_y1_downstream(Q, self.H, self.P, self.L, self.lateral, self.elevation_shifted)
+            Y_Conj2 = solve_y2_jump(Q, Y_Conj1, self.lateral, self.elevation_shifted)
             Y_Flips.append(Y_Flip)
-            Y_Conjugates.append(Y_Conj)
+            Y_Conjugates.append(Y_Conj2)
 
         ax.plot(Qs * 35.315, np.array(Y_Flips) * 3.281, label="Flip Depth", color='gray', linestyle='--')
         ax.plot(Qs * 35.315, Y_Ts * 3.281, label="Tailwater Depth", color='dodgerblue', linestyle='-')
@@ -149,19 +164,27 @@ class CrossSection:
         ax.scatter(np_fatal_qs * 35.315, fatal_d * 3.281, label="Recorded Fatality", marker='o', facecolors='none',
                    edgecolors='black')
 
-    def create_combined_fig(self):
-        fig, ax = plt.subplots()
+    def create_combined_fig(self, save=True):
+        fig, ax = plt.subplots(figsize=(12, 8))
         self.plot_flip_sequent(ax)
         self.plot_fatal_flows(ax)
         ax.legend(loc='upper left')
-        fig.savefig(os.path.join(self.fig_dir, f"RC_{self.index}_LHD_{self.id}.png"))
-        return fig
+        if save:
+            fname = os.path.join(self.fig_dir, f"RC_{self.index}_LHD_{self.id}.png")
+            fig.savefig(fname, dpi=300, bbox_inches='tight')
+            return fig
+        else:
+            return None
 
     def get_dangerous_flow_range(self):
         """Calculates Qmin and Qmax for Type C jump (in cfs)."""
         Q_i = np.array([0.001])
-        Q_min = fsolve(rating_curve_intercept, Q_i, args=(self.L, self.P, self.a, self.b, 'conjugate'))[0]
-        Q_max = fsolve(rating_curve_intercept, Q_i, args=(self.L, self.P, self.a, self.b, 'flip'))[0]
+        Q_min = fsolve(rating_curve_intercept, Q_i, args=(self.L, self.P, self.a, self.b,
+                                                          self.lateral, self.elevation_shifted,
+                                                          'conjugate'))[0]
+        Q_max = fsolve(rating_curve_intercept, Q_i, args=(self.L, self.P, self.a, self.b,
+                                                          self.lateral, self.elevation_shifted,
+                                                          'flip'))[0]
         return Q_min * 35.315, Q_max * 35.315
 
     def plot_fdc(self, ax: Axes):
@@ -266,8 +289,10 @@ class Dam:
                     delta_wse = xs.wse - self.cross_sections[0].wse
                     y_i = xs.wse - xs.bed_elevation
                     try:
-                        P_i = dam_height(self.baseflow, self.weir_length, delta_wse, y_i)
+                        H_i, P_i = solve_weir_geometry(self.baseflow, self.weir_length,
+                                                       y_i, delta_wse)
                         xs.set_dam_height(P_i)
+                        xs.set_head(H_i)
                         xs_info['P_height'] = P_i
                     except:
                         xs_info['P_height'] = None
@@ -395,12 +420,12 @@ class Dam:
         fig.savefig(os.path.join(self.fig_dir, f"LHD No. {self.id} Location.png"))
         return fig
 
-    def plot_water_surface(self):
+    def plot_water_surface(self, save=True):
         cf_csv = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_CurveFile.csv")
         xs_txt = os.path.join(self.results_dir, str(self.id), "XS", f"{self.id}_XS_Out.txt")
         database_df = merge_databases(cf_csv, xs_txt)
 
-        fig, ax = plt.subplots(figsize=(10, 10))
+        fig, ax = plt.subplots(figsize=(12, 10))
         ax.plot(database_df.index, database_df['DEM_Elev'], color='dodgerblue', label='DEM Elevation')
         ax.plot(database_df.index, database_df['BaseElev'], color='black', label='Bed Elevation')
 
@@ -420,4 +445,10 @@ class Dam:
         ax.set_ylabel("Elevation (m)")
         ax.set_title(f"Water Surface Profile for LHD No. {self.id}")
         fig.tight_layout()
-        return fig
+
+        if save:
+            fname = os.path.join(self.fig_dir, f"{self.id}_WSP.png")
+            fig.savefig(os.path.join(self.fig_dir, fname), dpi=300, bbox_inches='tight')
+            return fig
+        else:
+            return None

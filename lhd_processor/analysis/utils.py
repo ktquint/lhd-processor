@@ -24,17 +24,6 @@ def hydraulic_jump_type(y_2, y_t, y_flip):
     else:
         return 'N/A'
 
-def rating_curve_intercept(Q: float, L: float, P: float, a: float, b: float, which: str) -> float:
-    # Local import to avoid circular dependency
-    from .hydraulics import compute_flip_and_conjugate
-    y_flip, y_2 = compute_flip_and_conjugate(Q, L, P)
-    y_t = a * Q ** b
-    if which == 'flip':
-        return y_flip - y_t
-    elif which == 'conjugate':
-        return y_2 - y_t
-    else:
-        raise ValueError("which must be 'flip' or 'conjugate'")
 
 def get_prob_from_Q(Q, df):
     return df.loc[(df['Flow (cfs)'] - Q).abs().idxmin(), 'Exceedance (%)']
