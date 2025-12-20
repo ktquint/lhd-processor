@@ -40,7 +40,30 @@ def setup_carousel_ui(parent_frame):
     canvas_frame = ttk.Frame(viewer_frame)
     canvas_frame.pack(fill="both", expand=True)
 
+    # === BIND RESIZE EVENT HERE ===
+    canvas_frame.bind("<Configure>", on_resize)
+
     # Note: We don't pack viewer_frame yet; it appears only when needed.
+
+
+def on_resize(event):
+    """Dynamically resizes the figure when the window size changes."""
+    if current_figure_canvas and current_figure_canvas.figure:
+        w = event.width
+        h = event.height
+
+        # Prevent errors if the window is being destroyed or extremely small
+        if w > 50 and h > 50:
+            fig = current_figure_canvas.figure
+            dpi = fig.get_dpi()
+            # Update figure size in inches
+            fig.set_size_inches(w / dpi, h / dpi)
+
+            # Optional: Re-tighten layout to prevent clipped labels
+            # fig.tight_layout()
+
+            # Redraw efficiently
+            current_figure_canvas.draw_idle()
 
 
 def clear_figure_carousel():
@@ -77,6 +100,15 @@ def display_figure(index):
     current_figure_canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
     current_figure_canvas.draw()
     current_figure_canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    # === FORCE INITIAL SIZE SYNC ===
+    # This ensures the new figure adopts the current window size immediately
+    if canvas_frame.winfo_width() > 50:
+        w = canvas_frame.winfo_width()
+        h = canvas_frame.winfo_height()
+        dpi = fig.get_dpi()
+        fig.set_size_inches(w / dpi, h / dpi)
+        current_figure_canvas.draw_idle()
 
     label_var.set(f"{title} ({index + 1} of {len(current_figure_list)})")
 

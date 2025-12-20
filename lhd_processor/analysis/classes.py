@@ -6,6 +6,7 @@ import pandas as pd
 import geopandas as gpd
 import contextily as ctx
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure  # <--- Essential for Thread Safety
 from matplotlib.axes import Axes
 from scipy.optimize import fsolve
 from matplotlib.ticker import FixedLocator
@@ -102,12 +103,9 @@ class CrossSection:
         q_list = []
         wse_list = []
 
-        # Find all columns starting with 'q_' and extract their suffix
-        # xs_row.index gives us the column names since xs_row is a Series
         q_cols = [col for col in xs_row.index if str(col).startswith('q_')]
 
         for q_col in q_cols:
-            # Safely extract the suffix (e.g. '1' from 'q_1')
             parts = q_col.split('_')
             if len(parts) > 1 and parts[1].isdigit():
                 suffix = parts[1]
@@ -117,20 +115,15 @@ class CrossSection:
                     q_val = xs_row[q_col]
                     wse_val = xs_row[wse_col]
 
-                    # Filter valid data
                     if pd.notnull(q_val) and pd.notnull(wse_val):
                         q_list.append(float(q_val))
                         wse_list.append(float(wse_val))
 
         if q_list:
-            # Convert to numpy arrays and sort by Flow (Q)
             inds = np.argsort(q_list)
             self.vdt_Q = np.array(q_list)[inds]
             sorted_wse = np.array(wse_list)[inds]
-
-            # Calculate Depth = WSE - Bed Elevation
             self.vdt_depth = sorted_wse - self.bed_elevation
-            # Ensure no negative depths due to minor discrepancies
             self.vdt_depth[self.vdt_depth < 0] = 0
         else:
             self.vdt_Q = np.array([])
@@ -144,23 +137,21 @@ class CrossSection:
         self.H = H
 
     def get_tailwater_depth(self, Q):
-        """Interpolates tailwater depth from the VDT data."""
         if len(self.vdt_Q) == 0:
-            # Fallback to power law if VDT is missing
             return self.a * Q ** self.b
-
-        # Linear interpolation
         return np.interp(Q, self.vdt_Q, self.vdt_depth)
 
     def plot_cross_section(self, save=True):
-        fig, ax = plt.subplots(figsize=(10, 6))
+        # FIX: Replaced plt.subplots with Figure()
+        fig = Figure(figsize=(10, 6))
+        ax = fig.add_subplot(111)
+
         ax.plot(self.lateral, self.elevation, color='black', label='Cross-Section with Bathymetry Estimation')
         ax.plot(self.water_lateral, self.water_elevation, color='cyan', linestyle='--',
                 label=f'Water Surface Elevation: {round(self.wse, 1)} m')
         ax.set_xlim(-1.5 * self.L, 1.5 * self.L)
         ax.set_xlabel('Lateral Distance (m)')
         ax.set_ylabel('Elevation (m)')
-        # ax.set_title(f'{self.location} Cross-Section {self.distance} meters from LHD No. {self.id}')
         ax.set_title(f'Downstream Slope: {self.slope}')
         ax.legend(loc='upper right')
 
@@ -175,7 +166,6 @@ class CrossSection:
             return None
 
     def create_rating_curve(self):
-        # Use VDT data if available, otherwise fallback to linspace + power law
         if len(self.vdt_Q) > 0:
             x = self.vdt_Q
             y = self.vdt_depth
@@ -185,12 +175,13 @@ class CrossSection:
             y = self.a * x ** self.b
             label = f'Rating Curve (Power Law) {self.distance}m {self.location}'
 
+        # Note: This method uses plt.plot directly, which is unsafe for threads,
+        # but it seems unused in the main "threaded_display" loop or not critical for the GUI carousel.
         plt.plot(x, y, label=label)
 
     def plot_flip_sequent(self, ax):
         if len(self.vdt_Q) > 0:
             Qs = self.vdt_Q
-            # Use interpolated depth (though at exact VDT points, interp is exact)
             Y_Ts = self.vdt_depth
         else:
             Qs = np.linspace(0.01, self.max_Q, 100)
@@ -200,12 +191,8 @@ class CrossSection:
         Y_Conjugates = []
 
         for i, Q in enumerate(Qs):
-            # Q is flow, Y_Ts[i] is tailwater
-
-            # Recalculate Hydraulic Jump characteristics for this Q
             Y_Flip = compute_y_flip(Q, self.L, self.P)
-
-            Y_Conj1 = solve_y1_downstream(Q,  self.L, self.P, self.lateral, self.elevation_shifted)
+            Y_Conj1 = solve_y1_downstream(Q, self.L, self.P, self.lateral, self.elevation_shifted)
             Y_Conj2 = solve_y2_jump(Q, Y_Conj1, self.lateral, self.elevation_shifted)
 
             Y_Flips.append(Y_Flip)
@@ -226,14 +213,16 @@ class CrossSection:
             return
 
         np_fatal_qs = np.array(self.fatal_qs)
-        # Use new get_tailwater_depth method
         fatal_d = np.array([self.get_tailwater_depth(q) for q in np_fatal_qs])
 
         ax.scatter(np_fatal_qs * 35.315, fatal_d * 3.281, label="Recorded Fatality", marker='o', facecolors='none',
                    edgecolors='black')
 
     def create_combined_fig(self, save=True):
-        fig, ax = plt.subplots(figsize=(12, 8))
+        # FIX: Replaced plt.subplots with Figure()
+        fig = Figure(figsize=(12, 8))
+        ax = fig.add_subplot(111)
+
         self.plot_flip_sequent(ax)
         self.plot_fatal_flows(ax)
         ax.legend(loc='upper left')
@@ -251,10 +240,8 @@ class CrossSection:
             Q = Q_guess[0] if isinstance(Q_guess, (list, np.ndarray)) else Q_guess
             if Q <= 0.001: return 1e6
 
-            # 1. Get Tailwater from VDT Interpolation
             y_t = self.get_tailwater_depth(Q)
 
-            # 2. Get Hydraulics for this Q
             if which == 'flip':
                 y_target = compute_y_flip(Q, self.L, self.P)
             elif which == 'conjugate':
@@ -265,20 +252,16 @@ class CrossSection:
 
             return y_target - y_t
 
-        Q_i = np.array([10.0]) # Initial guess
+        Q_i = np.array([10.0])
 
-        # Q_max: Tailwater drops below Flip Bucket (y_t = y_flip)
         try:
             Q_max = fsolve(obj_func, Q_i, args=('flip',))[0]
         except Exception:
-            # Fallback if no intersection found (e.g. extremely high flow or invalid range)
             Q_max = self.max_Q
 
-        # Q_min: Tailwater drops below Sequent Depth (y_t = y_2)
         try:
             Q_min = fsolve(obj_func, Q_i, args=('conjugate',))[0]
         except Exception:
-            # Fallback to 0 if no intersection found (assumes danger starts immediately)
             Q_min = 0.0
 
         return Q_min, Q_max
@@ -300,9 +283,10 @@ class CrossSection:
 
         try:
             Q_conj, Q_flip = self.get_dangerous_flow_range()
+            # Convert to CFS for plotting
             Q_conj *= 35.315
             Q_flip *= 35.315
-            # Safety check if solver failed (returned negative or tiny flow)
+
             if Q_conj > 1 and Q_flip > 1:
                 P_flip = get_prob_from_Q(Q_flip, fdc_df)
                 P_conj = get_prob_from_Q(Q_conj, fdc_df)
@@ -319,9 +303,12 @@ class CrossSection:
         ax.legend()
 
     def create_combined_fdc(self):
-        fig, ax = plt.subplots()
+        # FIX: Replaced plt.subplots with Figure()
+        fig = Figure(figsize=(10, 6))
+        ax = fig.add_subplot(111)
+
         self.plot_fdc(ax)
-        fig.savefig(os.path.join(self.fig_dir, f"FDC_{self.index}_LHD_{self.id}.png"))
+        fig.savefig(os.path.join(self.fig_dir, f"FDC_{self.index}_LHD_{self.id}.png"), dpi=300, bbox_inches='tight')
         return fig
 
 
@@ -331,7 +318,6 @@ class Dam:
         self.db = db_manager
         self.results_dir = base_results_dir
 
-        # Load Data
         self.site_data = self.db.get_site(self.id)
         self.incidents_df = self.db.get_site_incidents(self.id)
 
@@ -364,7 +350,6 @@ class Dam:
             except:
                 pass
 
-        # Load Geometry
         vdt_gpkg = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Local_VDT_Database.gpkg")
         rc_gpkg = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Local_CurveFile.gpkg")
         xs_gpkg = os.path.join(self.results_dir, str(self.id), "XS", f"{self.id}_Local_XS_Lines.gpkg")
@@ -375,15 +360,10 @@ class Dam:
         for index, row in self.dam_gdf.iterrows():
             self.cross_sections.append(CrossSection(index, row, self))
 
-
     def load_results(self):
-        """
-            Loads existing analysis results (P, H) from the database so we can plot without re-calc.
-        """
         if self.db.xsections.empty:
             return
 
-        # Filter for this dam
         xs_data = self.db.xsections[self.db.xsections['site_id'] == self.id]
         if xs_data.empty:
             return
@@ -396,7 +376,6 @@ class Dam:
                     if pd.notnull(p_val):
                         P = float(p_val)
                         xs.set_dam_height(P)
-                        # Estimate H based on baseflow and P (needed for some plots)
                         if self.baseflow > 0:
                             H = weir_H(self.baseflow, self.weir_length)
                             xs.set_head(H)
@@ -404,9 +383,6 @@ class Dam:
                     print(f"Error loading parameters for XS {xs.index}: {e}")
 
     def run_analysis(self, est_dam=True):
-        """
-            Performs the computationally expensive hydraulic analysis.
-        """
         xs_data_list = []
         hydro_results_list = []
 
@@ -419,14 +395,11 @@ class Dam:
             }
 
             if i > 0:
-                # 1. Calculate Dam Height (P) and Head (H)
                 if est_dam:
                     delta_wse = self.cross_sections[0].wse - xs.wse
                     y_i = xs.wse - xs.bed_elevation
                     try:
                         H_i, P_i = solve_weir_geometry(self.baseflow, self.weir_length, y_i, delta_wse)
-
-                        # Drowning check
                         y_1 = solve_y1_downstream(self.baseflow, self.weir_length, P_i,
                                                   xs.lateral, xs.elevation_shifted)
                         if y_1 > P_i:
@@ -444,7 +417,6 @@ class Dam:
                     xs.set_dam_height(known_p)
                     xs_info['P_height'] = known_p
 
-                # 2. Calculate Dangerous Flow Range
                 if xs.P:
                     try:
                         q_min, q_max = xs.get_dangerous_flow_range()
@@ -453,16 +425,13 @@ class Dam:
                     except:
                         pass
 
-                # 3. Calculate Incident Hydraulics
                 for _, inc_row in self.incidents_df.iterrows():
                     Q = inc_row['flow']
                     date = inc_row['date']
 
                     if pd.notna(Q) and xs.P:
                         try:
-                            # Use VDT interpolation for y_t
                             y_t = xs.get_tailwater_depth(Q)
-
                             y_1 = solve_y1_downstream(Q, xs.L, xs.P, xs.lateral, xs.elevation_shifted)
                             y_2 = solve_y2_jump(Q, y_1, xs.lateral, xs.elevation_shifted)
                             y_flip = compute_y_flip(Q, xs.L, xs.P)
@@ -481,7 +450,6 @@ class Dam:
 
             xs_data_list.append(xs_info)
 
-        # Save to the DB object
         self.db.update_analysis_results(self.id, xs_data_list, hydro_results_list)
 
     def get_flow_data(self):
@@ -532,7 +500,11 @@ class Dam:
 
         buffer = 100
         minx, miny, maxx, maxy = xs_gdf.total_bounds
-        fig, ax = plt.subplots(figsize=(10, 10))
+
+        # FIX: Replaced plt.subplots with Figure()
+        fig = Figure(figsize=(10, 10))
+        ax = fig.add_subplot(111)
+
         ax.set_xlim(minx - buffer * 2, maxx + buffer * 2)
         ax.set_ylim(miny - buffer, maxy + buffer)
 
@@ -567,7 +539,7 @@ class Dam:
                     ).set_path_effects([pe.withStroke(linewidth=3, foreground="white")])
 
         fig.tight_layout()
-        fig.savefig(os.path.join(self.fig_dir, f"LHD No. {self.id} Location.png"))
+        fig.savefig(os.path.join(self.fig_dir, f"LHD No. {self.id} Location.png"), dpi=300, bbox_inches='tight')
         return fig
 
     def plot_water_surface(self, save=True):
@@ -575,13 +547,17 @@ class Dam:
         xs_txt = os.path.join(self.results_dir, str(self.id), "XS", f"{self.id}_XS_Out.txt")
         database_df = merge_databases(cf_csv, xs_txt)
 
-        fig, ax = plt.subplots(figsize=(12, 10))
+        # FIX: Replaced plt.subplots with Figure()
+        fig = Figure(figsize=(12, 10))
+        ax = fig.add_subplot(111)
+
         ax.plot(database_df.index, database_df['DEM_Elev'], color='dodgerblue', label='DEM Elevation')
         ax.plot(database_df.index, database_df['BaseElev'], color='black', label='Bed Elevation')
 
         upstream_xs = self.dam_gdf.iloc[0]
         upstream_idx = \
-        database_df[(database_df['Row'] == upstream_xs['Row']) & (database_df['Col'] == upstream_xs['Col'])].index[0]
+            database_df[(database_df['Row'] == upstream_xs['Row']) & (database_df['Col'] == upstream_xs['Col'])].index[
+                0]
         ax.axvline(x=upstream_idx, color='red', linestyle='--', label=f'Upstream Cross-Section')
 
         for i in range(1, len(self.dam_gdf)):
