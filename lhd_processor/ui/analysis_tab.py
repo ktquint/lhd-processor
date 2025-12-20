@@ -137,23 +137,27 @@ def update_dropdown():
 
 
 def process_single_dam_analysis(dam_id, xlsx_path, res_dir):
-    """Worker function to analyze one dam in a separate process."""
     try:
         from ..analysis.classes import Dam as AnalysisDam
         from ..data_manager import DatabaseManager
 
-        # Initialize a fresh manager and dam object for this process
         db = DatabaseManager(xlsx_path)
-        dam = AnalysisDam(dam_id, db, est_dam=True, base_results_dir=res_dir)
+        # 1. Initialize (Loads geometry only - Fast)
+        dam = AnalysisDam(dam_id, db, base_results_dir=res_dir)
 
-        # The Dam __init__ already performs the analysis and updates the db object
-        # We return the updated data to be merged in the main thread
-        return True, dam_id, dam.site_data, None
+        # 2. Run Analysis (Calculates P, H, Jumps - Expensive)
+        dam.run_analysis(est_dam=True)
+
+        # 3. Extract results to return
+        xs_data = db.xsections[db.xsections['site_id'] == dam_id].to_dict('records')
+        res_data = db.results[db.results['site_id'] == dam_id].to_dict('records')
+
+        return True, dam_id, dam.site_data, xs_data, res_data, None
     except Exception as e:
-        return False, dam_id, None, str(e)
+        return False, dam_id, None, None, None, str(e)
 
 # --- Helpers ---
-def generate_summary_charts(db_path):
+def generate_summary_charts(db_path, filter_id=None):
     figures_list = []
     try:
         db = DatabaseManager(db_path)
@@ -164,8 +168,8 @@ def generate_summary_charts(db_path):
                 # 1. Get Hydraulic Results for this XS index
                 # We filter the 'HydraulicResults' tab
                 res_df = db.results[db.results['xs_index'] == i].copy()
-
-                if res_df.empty: continue
+                if res_df.empty:
+                    continue
 
                 # 2. Get Slopes from CrossSections tab to join
                 xs_df = db.xsections[db.xsections['xs_index'] == i][['site_id', 'slope']]
@@ -174,7 +178,11 @@ def generate_summary_charts(db_path):
                 # This gives us: site_id, date, y_t, y_2, y_flip, slope
                 plot_df = pd.merge(res_df, xs_df, on='site_id')
 
-                if plot_df.empty: continue
+                if filter_id is not None:
+                    plot_df = plot_df[plot_df['site_id'] == filter_id]
+
+                if plot_df.empty:
+                    continue
 
                 # 4. Sort for the bar chart (by Site, then Slope)
                 plot_df = plot_df.sort_values(['site_id', 'slope']).reset_index(drop=True)
@@ -261,24 +269,27 @@ def threaded_analysis():
             utils.set_status("No processed dams found.")
             return
 
-        # Start a local cluster
-        worker_count = (os.cpu_count()-1) or 1
+        worker_count = (os.cpu_count() - 1) or 1
         with LocalCluster(n_workers=worker_count, threads_per_worker=1) as cluster:
             with Client(cluster) as client:
                 utils.set_status(f"Parallelizing analysis across {worker_count} workers...")
 
-                # Map the worker function to the list of IDs
                 futures = client.map(process_single_dam_analysis, valid_ids,
                                      xlsx_path=xlsx_path, res_dir=res_dir)
 
                 processed_count = 0
                 for future in as_completed(futures):
-                    success, dam_id, site_data, err = future.result()
+                    # UNPACK THE NEW RETURN VALUES HERE
+                    success, dam_id, site_data, xs_data, res_data, err = future.result()
                     processed_count += 1
 
                     if success:
-                        # Update the main thread's database manager with the results
+                        # Update the main thread's database manager with ALL results
                         db.update_site_data(dam_id, site_data)
+
+                        # Use the existing manager method to merge the lists of dicts
+                        db.update_analysis_results(dam_id, xs_data, res_data)
+
                         utils.set_status(f"Analyzed Dam {dam_id} ({processed_count}/{total})")
                     else:
                         print(f"Error on Dam {dam_id}: {err}")
@@ -289,6 +300,9 @@ def threaded_analysis():
         messagebox.showinfo("Success", "Parallel analysis complete.")
     except Exception as e:
         utils.set_status(f"Analysis failed: {e}")
+        # Print full traceback for debugging if needed
+        import traceback
+        traceback.print_exc()
     finally:
         run_btn.config(state=tk.NORMAL)
 
@@ -298,45 +312,86 @@ def threaded_display():
     try:
         xlsx_path = db_entry.get()
         res_dir = res_entry.get()
-        model = model_var.get()
         dam_sel = dam_dropdown.get()
 
-        # 1. Summary Charts (Placeholder - logic needs update for new schema)
+        # 1. Determine which dams to process based on selection
+        target_dams = []
+        filter_id = None  # Default to None (implies "All" for summary charts)
+
+        if dam_sel == "All Dams":
+            # Fetch all valid IDs from the database
+            db = DatabaseManager(xlsx_path)
+            if not db.sites.empty:
+                # Filter for sites that actually have results folders
+                all_ids = db.sites['site_id'].dropna().astype(int).tolist()
+                target_dams = [
+                    d for d in all_ids
+                    if os.path.exists(os.path.join(res_dir, str(d), "VDT"))
+                ]
+        elif dam_sel:
+            # Single dam selection
+            try:
+                d_id = int(dam_sel)
+                target_dams = [d_id]
+                filter_id = d_id  # Set filter for summary charts
+            except ValueError:
+                pass
+
+        # 2. Summary Charts
         if chk_bar.get():
             utils.set_status("Generating summary charts...")
-            figs.extend(generate_summary_charts(xlsx_path))
+            # Pass the filter_id to restrict the chart if a specific dam is selected
+            figs.extend(generate_summary_charts(xlsx_path, filter_id=filter_id))
 
-        # 2. Dam Specific
-        if dam_sel != "All Dams" and dam_sel:
-            utils.set_status(f"Loading Dam {dam_sel}...")
+        # 3. Dam Specific Figures (Iterate through target_dams)
+        if target_dams:
+            # Re-initialize DB for reading
             db = DatabaseManager(xlsx_path)
-            dam = AnalysisDam(int(dam_sel), db, est_dam=True, base_results_dir=res_dir)
 
-            if chk_xs.get():
-                for xs in dam.cross_sections:
-                    figs.append((xs.plot_cross_section(), f"XS {xs.index}"))
+            total = len(target_dams)
+            for idx, d_id in enumerate(target_dams):
+                utils.set_status(f"Generating plots for Dam {d_id} ({idx + 1}/{total})...")
 
-            if chk_rc.get():
-                for xs in dam.cross_sections[1:]:
-                    figs.append((xs.create_combined_fig(), f"Rating Curve {xs.index}"))
+                try:
+                    # Initialize Dam Object
+                    dam = AnalysisDam(d_id, db, base_results_dir=res_dir)
+                    dam.load_results()
 
-            if chk_map.get():
-                figs.append((dam.plot_map(), "Location Map"))
+                    # Helper to add and save figures
+                    # Note: The plot methods in classes.py already default to save=True
 
-            if chk_wsp.get():
-                figs.append((dam.plot_water_surface(), "WSE Profile"))
+                    if chk_xs.get():
+                        # This works purely on geometry loaded in __init__
+                        for xs in dam.cross_sections:
+                            figs.append((xs.plot_cross_section(), f"Dam {d_id} XS {xs.index}"))
 
-            if chk_fdc.get():
-                for xs in dam.cross_sections[1:]:
-                    figs.append((xs.create_combined_fdc(), f"FDC {xs.index}"))
+                    if chk_rc.get():
+                        # This uses the P values loaded by dam.load_results()
+                        for xs in dam.cross_sections[1:]:
+                            figs.append((xs.create_combined_fig(), f"Dam {d_id} RC {xs.index}"))
 
-        # Pass to main thread
+                    if chk_map.get():
+                        figs.append((dam.plot_map(), f"Dam {d_id} Map"))
+
+                    if chk_wsp.get():
+                        figs.append((dam.plot_water_surface(), f"Dam {d_id} WSE"))
+
+                    if chk_fdc.get():
+                        for xs in dam.cross_sections[1:]:
+                            figs.append((xs.create_combined_fdc(), f"Dam {d_id} FDC {xs.index}"))
+
+                except Exception as e:
+                    print(f"Skipping plots for Dam {d_id} due to error: {e}")
+
+        # Pass to main thread to display in Carousel
+        # WARNING: If "All Dams" creates hundreds of figures, this might slow down the UI.
         utils.get_root().after(0, carousel.load_figures, figs)
 
     except Exception as e:
         utils.set_status(f"Error displaying: {e}")
     finally:
         display_btn.config(state=tk.NORMAL)
+        utils.set_status("Figure generation complete.")
 
 
 # Thread Starters

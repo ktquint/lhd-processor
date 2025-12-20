@@ -21,6 +21,8 @@ dependencies:
   - gdal
   - laspy
   - contextily
+  - dask
+  - distributed
 
   # External Packages (installed via pip from GitHub)
   - pip:

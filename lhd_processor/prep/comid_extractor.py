@@ -287,8 +287,8 @@ def find_nearest_flowline_data(
     # B. Project Point to the metric CRS
     dam_point_projected = dam_point_gdf.to_crs(PROJECTED_CRS).iloc[0]
 
-    # 2. Read GeoDataFrame with Buffer
-    search_buffer = dam_point_projected.buffer(2000)
+    # 2. Read GeoDataFrame with Buffer of 500 meters
+    search_buffer = dam_point_projected.buffer(500)
     # Use the bounding box of the projected buffer to filter the already loaded (and projected) GDF
     streams_inside_buffer = gdf.cx[search_buffer.bounds[0]:search_buffer.bounds[2],
     search_buffer.bounds[1]:search_buffer.bounds[3]].copy()
@@ -325,124 +325,182 @@ def find_nearest_flowline_data(
 # =====================================================================
 # --- MAIN PROCESSING FUNCTION (DE-DUPLICATED) ---
 # =====================================================================
+import concurrent.futures
+
+
+# --- HELPER WORKER FUNCTIONS (Must be top-level for pickling) ---
+
+def _worker_identify_metadata(args):
+    """Phase 1 Worker: Just finds the HUC4 and VPU for a site."""
+    index, row, vpu_map_path = args
+    lat = row.get("latitude")
+    lon = row.get("longitude")
+    site_id = row.get("site_id", f"Row_{index}")
+
+    if pd.isna(lat) or pd.isna(lon):
+        return None
+
+    huc4 = find_huc4(lat, lon)
+    vpu_code = find_vpu(lat, lon, vpu_map_path)
+
+    return {
+        "index": index,
+        "site_id": site_id,
+        "latitude": lat,
+        "longitude": lon,
+        "HUC4": huc4,
+        "VPU_Code": vpu_code
+    }
+
+
+def _worker_extract_data(args):
+    """Phase 3 Worker: Performs the heavy spatial extraction."""
+    meta, strm_dir, unique_huc4_paths, unique_vpu_paths = args
+
+    lat = meta['latitude']
+    lon = meta['longitude']
+    huc4 = meta['HUC4']
+    vpu_code = meta['VPU_Code']
+
+    # Resolve local paths
+    nhd_gpkg_path = unique_huc4_paths.get(huc4)
+    geoglows_gpkg_path = unique_vpu_paths.get(vpu_code)
+
+    # NHDPlus Extraction
+    nhd_id, hydroseq, dist_nhd = None, None, None
+    if nhd_gpkg_path:
+        nhd_id, hydroseq, dist_nhd = find_nearest_flowline_data(
+            lat, lon, nhd_gpkg_path, 'NHDFlowline',
+            id_col='NHDPlusID', order_col='StreamOrder', extra_col='hydroseq'
+        )
+
+    # GEOGLOWS Extraction
+    geoglows_id, dist_tdx = None, None
+    if geoglows_gpkg_path:
+        geoglows_id, _, dist_tdx = find_nearest_flowline_data(
+            lat, lon, geoglows_gpkg_path, f'streams_{vpu_code}',
+            id_col='LINKNO', order_col='strmOrder'
+        )
+
+    # Return combined result
+    result = meta.copy()
+    result.update({
+        "NHD_Reach_ID": nhd_id,
+        "NHD_Hydroseq_ID": hydroseq,
+        "GEOGLOWS_Link_No": geoglows_id,
+        "dist_to_nhd": dist_nhd,
+        "dist_to_tdx": dist_tdx
+    })
+    return result
+
+
+# --- MAIN FUNCTION REPLACEMENT ---
 
 def extract_flowline_data_deduped(database_xlsx, output_csv, vpu_map_path, strm_dir, status_callback=None):
-    """
-    Finds HUC4/VPU, downloads flowlines, and extracts all IDs and distances,
-    processing each unique site only once.
-    """
     if not os.path.exists(database_xlsx):
         print(f"Error: Database not found: {database_xlsx}")
         return 0
 
-    # 1. Read Original Data and Create Unique Sites List
+    # 1. Load Data
     try:
-        # Use pd.read_excel since the file is named LHD Sites and Fatalities.xlsx
         df_original = pd.read_excel(database_xlsx)
     except Exception:
-        # Fallback to CSV reading if Excel fails (maybe it was a file type error)
         try:
             df_original = pd.read_csv(database_xlsx, encoding='latin-1')
         except Exception:
-            print("Error: Could not read file. Check file path, type (.xlsx or .csv), and encoding.")
+            print("Error: Could not read file.")
             return 0
 
-    if 'latitude' not in df_original.columns or 'longitude' not in df_original.columns:
-        if 'Latitude' in df_original.columns and 'Longitude' in df_original.columns:
-            df_original = df_original.rename(columns={'Latitude': 'latitude', 'Longitude': 'longitude'})
-        else:
-            print("Error: Input file must contain 'latitude' and 'longitude' columns.")
-            return 0
+    # Normalize columns
+    if 'Latitude' in df_original.columns: df_original.rename(columns={'Latitude': 'latitude'}, inplace=True)
+    if 'Longitude' in df_original.columns: df_original.rename(columns={'Longitude': 'longitude'}, inplace=True)
 
     dedupe_cols = ['site_id', 'latitude', 'longitude']
     df_unique = df_original.drop_duplicates(subset=dedupe_cols).reset_index(drop=True).copy()
-
-    unique_sites_results = []
-    unique_huc4s = {}
-    unique_vpus = {}
-
     total = len(df_unique)
-    print(f"Total rows in input: {len(df_original)}. Total unique sites to process: {total}.")
 
-    # 2. Iterate ONLY Over Unique Sites
-    for i, row in df_unique.iterrows():
-        site_id = row.get("site_id", f"Row_{i}")
-        lat = row.get("latitude")
-        lon = row.get("longitude")
+    print(f"--- Processing {total} Unique Sites ---")
 
-        if pd.isna(lat) or pd.isna(lon):
-            print(f"Skipping Site {site_id}: Invalid coordinates.")
-            continue
+    # =================================================================
+    # PHASE 1: Identify HUC4 and VPU (Parallel IO/CPU)
+    # =================================================================
+    print(f"Phase 1: Identifying Hydrologic Regions (Parallel)...")
+    site_metadata = []
 
-        if status_callback:
-            status_callback(f"[{i + 1}/{total}] Processing Site {site_id}...")
+    # Prepare arguments for workers
+    phase1_args = [(i, row, vpu_map_path) for i, row in df_unique.iterrows()]
 
-        # A. Identify HUC4 and VPU Code
-        huc4 = find_huc4(lat, lon)
-        vpu_code = find_vpu(lat, lon, vpu_map_path)
+    # Use ProcessPoolExecutor for mixed IO/CPU work
+    with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(_worker_identify_metadata, phase1_args))
 
-        # B. Download/Locate Flowline GeoPackages
-        nhd_gpkg_path = None
-        if huc4:
-            nhd_gpkg_path = unique_huc4s.setdefault(huc4, download_nhdplus_flowline(huc4, lat, lon, strm_dir))
+    # Filter out failures
+    site_metadata = [r for r in results if r is not None]
 
-        geoglows_gpkg_path = None
-        if vpu_code:
-            geoglows_gpkg_path = unique_vpus.setdefault(vpu_code, download_geoglows_flowline(vpu_code, strm_dir))
+    # =================================================================
+    # PHASE 2: Download Missing Files (Sequential to avoid corruption)
+    # =================================================================
+    print(f"Phase 2: Verifying & Downloading Data Files...")
 
-        # C. Find IDs and Distance
-        nhd_id, hydroseq, dist_nhd = None, None, None
-        geoglows_id, dist_tdx = None, None
+    unique_huc4s = set(m['HUC4'] for m in site_metadata if m['HUC4'])
+    unique_vpus = set(m['VPU_Code'] for m in site_metadata if m['VPU_Code'])
 
-        # NHDPlus
-        if nhd_gpkg_path:
-            nhd_id, hydroseq, dist_nhd = find_nearest_flowline_data(
-                lat, lon, nhd_gpkg_path, 'NHDFlowline',
-                id_col='NHDPlusID', order_col='StreamOrder', extra_col='hydroseq'
-            )
+    unique_huc4_paths = {}
+    unique_vpu_paths = {}
 
-        # GEOGLOWS (TDXHYDRO)
-        if geoglows_gpkg_path:
-            geoglows_id, _, dist_tdx = find_nearest_flowline_data(
-                lat, lon, geoglows_gpkg_path, f'streams_{vpu_code}',
-                id_col='LINKNO', order_col='strmOrder'
-            )
+    # Download NHD Files
+    for huc4 in unique_huc4s:
+        # We need a representative lat/lon to query the map service if downloading
+        rep_site = next(m for m in site_metadata if m['HUC4'] == huc4)
+        path = download_nhdplus_flowline(huc4, rep_site['latitude'], rep_site['longitude'], strm_dir)
+        if path: unique_huc4_paths[huc4] = path
 
-        # D. Record Results
-        dist_nhd_str = f"{dist_nhd:.2f}" if dist_nhd is not None else "N/A"
-        dist_tdx_str = f"{dist_tdx:.2f}" if dist_tdx is not None else "N/A"
+    # Download GEOGLOWS Files
+    for vpu in unique_vpus:
+        path = download_geoglows_flowline(vpu, strm_dir)
+        if path: unique_vpu_paths[vpu] = path
 
-        print(f" -> NHD: {nhd_id} (HUC4: {huc4}, Hydroseq: {hydroseq}, Dist: {dist_nhd_str} m)")
-        print(f" -> TDX: {geoglows_id} (VPU: {vpu_code}, Dist: {dist_tdx_str} m)")
+    # =================================================================
+    # PHASE 3: Spatial Extraction (Parallel CPU)
+    # =================================================================
+    print(f"Phase 3: Extracting Flowline IDs (Parallel)...")
 
-        unique_sites_results.append({
-            "site_id": site_id,
-            "latitude": lat,
-            "longitude": lon,
-            "HUC4": huc4,
-            "VPU_Code": vpu_code,
-            "NHD_Reach_ID": nhd_id,
-            "NHD_Hydroseq_ID": hydroseq,
-            "GEOGLOWS_Link_No": geoglows_id,
-            "dist_to_nhd": dist_nhd,
-            "dist_to_tdx": dist_tdx
-        })
+    phase3_args = [(m, strm_dir, unique_huc4_paths, unique_vpu_paths) for m in site_metadata]
 
-    # 3. Merge Results back to Original Dataframe
-    if not unique_sites_results:
-        print("No sites were successfully processed. Saving original data only.")
+    final_results = []
+    with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
+        # We use map to keep order, or as_completed for progress bar
+        futures = {executor.submit(_worker_extract_data, arg): arg for arg in phase3_args}
+
+        completed_count = 0
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            final_results.append(res)
+            completed_count += 1
+            if status_callback and completed_count % 5 == 0:
+                status_callback(f"Phase 3 Progress: {completed_count}/{len(phase3_args)}")
+            elif completed_count % 10 == 0:
+                print(f"  > Processed {completed_count}/{len(phase3_args)} sites")
+
+    # =================================================================
+    # MERGE & SAVE
+    # =================================================================
+    if not final_results:
+        print("No results generated.")
         return 0
 
-    df_results = pd.DataFrame(unique_sites_results)
+    df_results = pd.DataFrame(final_results)
 
-    df_final = pd.merge(df_original, df_results,
-                        on=dedupe_cols,
-                        how='left')
+    # Merge back to original (handling duplicates)
+    df_final = pd.merge(df_original, df_results[['site_id', 'latitude', 'longitude',
+                                                 'HUC4', 'VPU_Code', 'NHD_Reach_ID',
+                                                 'NHD_Hydroseq_ID', 'GEOGLOWS_Link_No',
+                                                 'dist_to_nhd', 'dist_to_tdx']],
+                        on=dedupe_cols, how='left')
 
-    # 4. Save to CSV
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)
     df_final.to_csv(output_csv, index=False)
-    print(f"\nFinal output rows: {len(df_final)}. All original rows were preserved.")
+    print(f"--- Complete. Saved {len(df_final)} rows to {output_csv} ---")
     return len(df_final)
 
 

@@ -7,16 +7,16 @@ import numpy as np
 from scipy.optimize import fsolve
 
 
-def get_geometry_props(target_depth, x_coords, y_coords):
+def get_geometry_props(water_depth, x_coords, y_coords):
     """
     Correctly calculates Area for a U-shaped channel by finding
     the width between the left and right banks at every level.
     """
-    if target_depth <= 0:
+    if water_depth <= 0:
         return 0.0001, 0.0001
 
-    # We integrate from the bottom (0) up to the target_depth
-    y_levels = np.linspace(0, target_depth, 100)
+    # We integrate from the bottom (0) up to the water_depth
+    y_levels = np.linspace(0, water_depth, 100)
     widths = []
 
     # Find the deepest point to split the channel into Left and Right banks
@@ -39,7 +39,7 @@ def get_geometry_props(target_depth, x_coords, y_coords):
     # Calculate Centroid (Moment of area / Total Area)
     moment_bottom = np.trapezoid(np.array(widths) * y_levels, y_levels)
     y_centroid_from_bottom = moment_bottom / A if A > 0 else 0
-    y_cent = target_depth - y_centroid_from_bottom
+    y_cent = water_depth - y_centroid_from_bottom
 
     return A, y_cent
 

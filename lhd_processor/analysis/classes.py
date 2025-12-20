@@ -226,7 +226,7 @@ class CrossSection:
 
 
 class Dam:
-    def __init__(self, lhd_id, db_manager, est_dam, base_results_dir):
+    def __init__(self, lhd_id, db_manager, base_results_dir):
         self.id = int(lhd_id)
         self.db = db_manager
         self.results_dir = base_results_dir
@@ -252,16 +252,19 @@ class Dam:
         project_root = os.path.dirname(current_dir)
         comid_path = os.path.join(project_root, 'data', 'comid_table.csv')
         self.nwm_id = None
-
         self.geoglows_id = None
         if os.path.exists(comid_path):
-            comid_df = pd.read_csv(comid_path)
-            comid_df['ID'] = pd.to_numeric(comid_df['ID'], errors='coerce')
-            match = comid_df[comid_df['ID'] == self.id]
-            if not match.empty:
-                self.nwm_id = match.iloc[0]['reach_id']
-                self.geoglows_id = match.iloc[0]['linkno']
+            try:
+                comid_df = pd.read_csv(comid_path)
+                comid_df['ID'] = pd.to_numeric(comid_df['ID'], errors='coerce')
+                match = comid_df[comid_df['ID'] == self.id]
+                if not match.empty:
+                    self.nwm_id = match.iloc[0]['reach_id']
+                    self.geoglows_id = match.iloc[0]['linkno']
+            except:
+                pass
 
+        # Load Geometry
         vdt_gpkg = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Local_VDT_Database.gpkg")
         rc_gpkg = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Local_CurveFile.gpkg")
         xs_gpkg = os.path.join(self.results_dir, str(self.id), "XS", f"{self.id}_Local_XS_Lines.gpkg")
@@ -272,7 +275,38 @@ class Dam:
         for index, row in self.dam_gdf.iterrows():
             self.cross_sections.append(CrossSection(index, row, self))
 
-        # --- Analysis Logic ---
+
+    def load_results(self):
+        """
+            Loads existing analysis results (P, H) from the database so we can plot without re-calc.
+        """
+        if self.db.xsections.empty:
+            return
+
+        # Filter for this dam
+        xs_data = self.db.xsections[self.db.xsections['site_id'] == self.id]
+        if xs_data.empty:
+            return
+
+        for xs in self.cross_sections:
+            row = xs_data[xs_data['xs_index'] == xs.index]
+            if not row.empty:
+                try:
+                    p_val = row.iloc[0]['P_height']
+                    if pd.notnull(p_val):
+                        P = float(p_val)
+                        xs.set_dam_height(P)
+                        # Estimate H based on baseflow and P (needed for some plots)
+                        if self.baseflow > 0:
+                            H = weir_H(self.baseflow, self.weir_length, P)
+                            xs.set_head(H)
+                except Exception as e:
+                    print(f"Error loading parameters for XS {xs.index}: {e}")
+
+    def run_analysis(self, est_dam=True):
+        """
+            Performs the computationally expensive hydraulic analysis.
+        """
         xs_data_list = []
         hydro_results_list = []
 
@@ -285,41 +319,32 @@ class Dam:
             }
 
             if i > 0:
+                # 1. Calculate Dam Height (P) and Head (H)
                 if est_dam:
                     delta_wse = self.cross_sections[0].wse - xs.wse
                     y_i = xs.wse - xs.bed_elevation
-                    # --- DEBUG PRINTS ---
-                    print(f"\n[DEBUG] Dam {self.id} | Cross-Section {i}")
-                    print(f"  - Delta WSE: {delta_wse:.4f} m")
-                    print(f"  - Tailwater Depth (y_t): {y_i:.4f} m")
-                    print(f"  - Baseflow (Q): {self.baseflow:.4f} cms")
-                    print(f"  - Weir Length (L): {self.weir_length:.2f} m")
-                    # --------------------
                     try:
-                        print(f"\n[DEBUG] Dam {self.id} | Cross-Section {i}")
                         H_i, P_i = solve_weir_geometry(self.baseflow, self.weir_length, y_i, delta_wse)
-                        print(f"\n  - Dam Height (P): {P_i} m")
-                        print(f"\n  - Weir Head (H): {H_i} m")
 
-                        # Calculate y1 to check for drowning
+                        # Drowning check
                         y_1 = solve_y1_downstream(self.baseflow, H_i, P_i, self.weir_length,
                                                   xs.lateral, xs.elevation_shifted)
-
                         if y_1 > P_i:
-                            raise ValueError(f"Drowned condition: y1 ({y_1:.2f}) is greater than P ({P_i:.2f})")
+                            print(f"Warning: Dam {self.id} XS {i} appears drowned.")
 
                         xs.set_dam_height(P_i)
                         xs.set_head(H_i)
                         xs_info['P_height'] = P_i
 
                     except Exception as e:
-                        print(f"Skipping Dam {self.id} analysis: {e}")
+                        print(f"Solver failed for Dam {self.id} XS {i}: {e}")
                         xs_info['P_height'] = None
                 else:
                     known_p = self.site_data.get('P_known', 2.0)
                     xs.set_dam_height(known_p)
                     xs_info['P_height'] = known_p
 
+                # 2. Calculate Dangerous Flow Range
                 if xs.P:
                     try:
                         q_min, q_max = xs.get_dangerous_flow_range()
@@ -328,6 +353,7 @@ class Dam:
                     except:
                         pass
 
+                # 3. Calculate Incident Hydraulics
                 for _, inc_row in self.incidents_df.iterrows():
                     Q = inc_row['flow']
                     date = inc_row['date']
@@ -335,6 +361,7 @@ class Dam:
                     if pd.notna(Q) and xs.P:
                         try:
                             y_t = xs.a * Q ** xs.b
+                            # H changes with Q
                             H = weir_H(Q, xs.L, xs.P)
                             y_1 = solve_y1_downstream(Q, H, xs.P, xs.L, xs.lateral, xs.elevation_shifted)
                             y_2 = solve_y2_jump(Q, y_1, xs.lateral, xs.elevation_shifted)
@@ -354,6 +381,7 @@ class Dam:
 
             xs_data_list.append(xs_info)
 
+        # Save to the DB object
         self.db.update_analysis_results(self.id, xs_data_list, hydro_results_list)
 
     def get_flow_data(self):
