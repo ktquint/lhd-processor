@@ -213,7 +213,7 @@ class CrossSection:
 
         # 4. Formatting - ZOOM to Thalweg +/- Weir Length
         thalweg_x = self.offset
-        ax.set_xlim(thalweg_x - self.L*2, thalweg_x + self.L*2)
+        ax.set_xlim(thalweg_x - self.L*2.5, thalweg_x + self.L*2.5)
 
         ax.set_xlabel('Lateral Distance (m)')
         ax.set_ylabel('Elevation (m)')
@@ -253,8 +253,9 @@ class CrossSection:
 
         for i, Q in enumerate(Qs):
             Y_Flip = compute_y_flip(Q, self.L, self.P)
-            Y_Conj1 = solve_y1_downstream(Q, self.L, self.P, self.lateral, self.elevation_shifted)
-            Y_Conj2 = solve_y2_jump(Q, Y_Conj1, self.lateral, self.elevation_shifted)
+            # Updated to pass raw profiles
+            Y_Conj1 = solve_y1_downstream(Q, self.L, self.P, self.y_1_raw, self.y_2_raw, self.dist)
+            Y_Conj2 = solve_y2_jump(Q, Y_Conj1, self.y_1_raw, self.y_2_raw, self.dist)
             Y_Flips.append(Y_Flip)
             Y_Conjugates.append(Y_Conj2)
 
@@ -297,8 +298,9 @@ class CrossSection:
             if which == 'flip':
                 y_target = compute_y_flip(Q, self.L, self.P)
             elif which == 'conjugate':
-                y_1 = solve_y1_downstream(Q, self.L, self.P, self.lateral, self.elevation_shifted)
-                y_target = solve_y2_jump(Q, y_1, self.lateral, self.elevation_shifted)
+                # Updated to pass raw profiles
+                y_1 = solve_y1_downstream(Q, self.L, self.P, self.y_1_raw, self.y_2_raw, self.dist)
+                y_target = solve_y2_jump(Q, y_1, self.y_1_raw, self.y_2_raw, self.dist)
             else:
                 return 1e6
             return y_target - y_t
@@ -440,8 +442,8 @@ class Dam:
                     y_i = xs.wse - xs.bed_elevation
                     try:
                         H_i, P_i = solve_weir_geometry(self.baseflow, self.weir_length, y_i, delta_wse)
-                        y_1 = solve_y1_downstream(self.baseflow, self.weir_length, P_i, xs.lateral,
-                                                  xs.elevation_shifted)
+                        # Updated to pass raw profiles
+                        y_1 = solve_y1_downstream(self.baseflow, self.weir_length, P_i, xs.y_1_raw, xs.y_2_raw, xs.dist)
                         if y_1 > P_i:
                             print(f"Warning: Dam {self.id} XS {i} appears drowned.")
                         xs.set_dam_height(P_i)
@@ -468,8 +470,9 @@ class Dam:
                     if pd.notna(Q) and xs.P:
                         try:
                             y_t = xs.get_tailwater_depth(Q)
-                            y_1 = solve_y1_downstream(Q, xs.L, xs.P, xs.lateral, xs.elevation_shifted)
-                            y_2 = solve_y2_jump(Q, y_1, xs.lateral, xs.elevation_shifted)
+                            # Updated to pass raw profiles
+                            y_1 = solve_y1_downstream(Q, xs.L, xs.P, xs.y_1_raw, xs.y_2_raw, xs.dist)
+                            y_2 = solve_y2_jump(Q, y_1, xs.y_1_raw, xs.y_2_raw, xs.dist)
                             y_flip = compute_y_flip(Q, xs.L, xs.P)
                             jump = hydraulic_jump_type(y_2, y_t, y_flip)
                             hydro_results_list.append({

@@ -96,6 +96,15 @@ def display_figure(index):
 
     fig, title = current_figure_list[index]
 
+    # === FIX FOR GUI STRETCHING ===
+    # Matplotlib figures have a default size (often 640x480).
+    # If we pack this directly, it forces the Tkinter window to expand.
+    # By setting a small initial size, we ensure it fits in the *current*
+    # space. The 'on_resize' handler or sync block below will immediately
+    # scale it UP to fill the frame properly.
+    fig.set_size_inches(2, 2)
+    # ==============================
+
     # Create new canvas
     current_figure_canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
     current_figure_canvas.draw()
