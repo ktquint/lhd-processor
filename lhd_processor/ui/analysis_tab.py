@@ -15,7 +15,6 @@ from . import utils, carousel
 # Module-level widgets
 db_entry = None
 res_entry = None
-model_var = None
 run_btn = None
 dam_dropdown = None
 display_btn = None
@@ -30,7 +29,7 @@ chk_bar = None
 
 
 def setup_analysis_tab(parent_tab):
-    global db_entry, res_entry, model_var, run_btn, dam_dropdown, display_btn
+    global db_entry, res_entry, run_btn, dam_dropdown, display_btn
     global chk_xs, chk_rc, chk_map, chk_wsp, chk_fdc, chk_bar
 
     # --- Step 3 Frame ---
@@ -50,17 +49,10 @@ def setup_analysis_tab(parent_tab):
     res_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
     ttk.Button(path_frame, text="Select...", command=select_res).grid(row=1, column=2, padx=5, pady=5)
 
-    # Row 2: Streamflow Source
-    ttk.Label(path_frame, text="Streamflow Source:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
-    model_var = tk.StringVar(value="National Water Model")
-    # Columnspan=2 to span across the Entry and Button columns from rows above
-    ttk.Combobox(path_frame, textvariable=model_var, values=("USGS", "GEOGLOWS", "National Water Model")).grid(
-        row=2, column=1, columnspan=2, padx=5, pady=5, sticky=tk.EW)
-
-    # Row 3: Run Button
-    # MODIFIED: Removed style="Accent.TButton" to ensure consistent font size
+    # Row 2: Run Button
+    # Moved up from row 3 since we removed the Streamflow Source input
     run_btn = ttk.Button(path_frame, text="3. Analyze & Save All Dam Data", command=start_analysis)
-    run_btn.grid(row=3, column=0, columnspan=3, padx=5, pady=10, sticky=tk.EW)
+    run_btn.grid(row=2, column=0, columnspan=3, padx=5, pady=10, sticky=tk.EW)
 
     # --- Figure Frame ---
     fig_frame = ttk.LabelFrame(parent_tab, text="Select Figures to Display")
@@ -84,7 +76,6 @@ def setup_analysis_tab(parent_tab):
     chk_bar = tk.BooleanVar(value=False);
     ttk.Checkbutton(fig_frame, text="Generate Bar Chart (All)", variable=chk_bar).grid(row=3, column=1, sticky=tk.W)
 
-    # MODIFIED: Removed style="Accent.TButton" to ensure consistent font size
     display_btn = ttk.Button(parent_tab, text="4. Generate & Display Figures", command=start_display)
     display_btn.pack(fill="x", padx=10, pady=10)
 
@@ -251,10 +242,6 @@ def generate_summary_charts(db_path, filter_id=None):
 
 
 # --- Threaded Logic ---
-
-from dask.distributed import Client, LocalCluster, as_completed
-
-
 def threaded_analysis():
     try:
         xlsx_path = db_entry.get()

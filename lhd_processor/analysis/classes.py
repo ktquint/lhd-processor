@@ -16,8 +16,8 @@ from .hydraulics import (solve_weir_geometry,
                          solve_y2_jump,
                          weir_H,
                          compute_y_flip,
-                         solve_y1_downstream,
-                         rating_curve_intercept)
+                         solve_y1_downstream)
+
 from .utils import (merge_arc_results,
                     merge_databases,
                     hydraulic_jump_type,
@@ -46,9 +46,9 @@ class CrossSection:
             self.distance = int(self.index * self.L)
             self.fatal_qs = self.parent_dam.fatal_flows
 
-        # rating curve info
-        val_a = xs_row['depth_a']
-        val_b = xs_row['depth_b']
+        # Legacy rating curve info (kept for schema compatibility)
+        val_a = xs_row.get('depth_a', 0)
+        val_b = xs_row.get('depth_b', 0)
         self.a = float(val_a[0]) if isinstance(val_a, list) else float(val_a)
         self.b = float(val_b[0]) if isinstance(val_b, list) else float(val_b)
         self.max_Q = xs_row['QMax']
@@ -98,11 +98,59 @@ class CrossSection:
         self.P = None
         self.H = None
 
+        # --- LOAD VDT DATA (Dynamic Columns) ---
+        q_list = []
+        wse_list = []
+
+        # Find all columns starting with 'q_' and extract their suffix
+        # xs_row.index gives us the column names since xs_row is a Series
+        q_cols = [col for col in xs_row.index if str(col).startswith('q_')]
+
+        for q_col in q_cols:
+            # Safely extract the suffix (e.g. '1' from 'q_1')
+            parts = q_col.split('_')
+            if len(parts) > 1 and parts[1].isdigit():
+                suffix = parts[1]
+                wse_col = f"wse_{suffix}"
+
+                if wse_col in xs_row:
+                    q_val = xs_row[q_col]
+                    wse_val = xs_row[wse_col]
+
+                    # Filter valid data
+                    if pd.notnull(q_val) and pd.notnull(wse_val):
+                        q_list.append(float(q_val))
+                        wse_list.append(float(wse_val))
+
+        if q_list:
+            # Convert to numpy arrays and sort by Flow (Q)
+            inds = np.argsort(q_list)
+            self.vdt_Q = np.array(q_list)[inds]
+            sorted_wse = np.array(wse_list)[inds]
+
+            # Calculate Depth = WSE - Bed Elevation
+            self.vdt_depth = sorted_wse - self.bed_elevation
+            # Ensure no negative depths due to minor discrepancies
+            self.vdt_depth[self.vdt_depth < 0] = 0
+        else:
+            self.vdt_Q = np.array([])
+            self.vdt_depth = np.array([])
+            print(f"Warning: No valid q_X / wse_X columns found for XS {self.index}.")
+
     def set_dam_height(self, P):
         self.P = P
 
     def set_head(self, H):
         self.H = H
+
+    def get_tailwater_depth(self, Q):
+        """Interpolates tailwater depth from the VDT data."""
+        if len(self.vdt_Q) == 0:
+            # Fallback to power law if VDT is missing
+            return self.a * Q ** self.b
+
+        # Linear interpolation
+        return np.interp(Q, self.vdt_Q, self.vdt_depth)
 
     def plot_cross_section(self, save=True):
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -127,21 +175,39 @@ class CrossSection:
             return None
 
     def create_rating_curve(self):
-        x = np.linspace(0.01, self.max_Q, 100)
-        y = self.a * x ** self.b
-        plt.plot(x, y,
-                 label=f'Rating Curve {self.distance} meters {self.location}: $y = {self.a:.3f} x^{{{self.b:.3f}}}$')
+        # Use VDT data if available, otherwise fallback to linspace + power law
+        if len(self.vdt_Q) > 0:
+            x = self.vdt_Q
+            y = self.vdt_depth
+            label = f'Rating Curve (VDT Data) {self.distance}m {self.location}'
+        else:
+            x = np.linspace(0.01, self.max_Q, 100)
+            y = self.a * x ** self.b
+            label = f'Rating Curve (Power Law) {self.distance}m {self.location}'
+
+        plt.plot(x, y, label=label)
 
     def plot_flip_sequent(self, ax):
-        Qs = np.linspace(0.01, self.max_Q, 100)
-        Y_Ts = self.a * Qs ** self.b
+        if len(self.vdt_Q) > 0:
+            Qs = self.vdt_Q
+            # Use interpolated depth (though at exact VDT points, interp is exact)
+            Y_Ts = self.vdt_depth
+        else:
+            Qs = np.linspace(0.01, self.max_Q, 100)
+            Y_Ts = self.a * Qs ** self.b
+
         Y_Flips = []
         Y_Conjugates = []
 
-        for Q in Qs:
+        for i, Q in enumerate(Qs):
+            # Q is flow, Y_Ts[i] is tailwater
+
+            # Recalculate Hydraulic Jump characteristics for this Q
             Y_Flip = compute_y_flip(Q, self.L, self.P)
-            Y_Conj1 = solve_y1_downstream(Q, self.H, self.P, self.L, self.lateral, self.elevation_shifted)
+
+            Y_Conj1 = solve_y1_downstream(Q,  self.L, self.P, self.lateral, self.elevation_shifted)
             Y_Conj2 = solve_y2_jump(Q, Y_Conj1, self.lateral, self.elevation_shifted)
+
             Y_Flips.append(Y_Flip)
             Y_Conjugates.append(Y_Conj2)
 
@@ -160,7 +226,9 @@ class CrossSection:
             return
 
         np_fatal_qs = np.array(self.fatal_qs)
-        fatal_d = self.a * np_fatal_qs ** self.b
+        # Use new get_tailwater_depth method
+        fatal_d = np.array([self.get_tailwater_depth(q) for q in np_fatal_qs])
+
         ax.scatter(np_fatal_qs * 35.315, fatal_d * 3.281, label="Recorded Fatality", marker='o', facecolors='none',
                    edgecolors='black')
 
@@ -177,14 +245,34 @@ class CrossSection:
             return None
 
     def get_dangerous_flow_range(self):
-        """Calculates Qmin and Qmax for Type C jump (in cfs)."""
-        Q_i = np.array([0.001])
-        Q_min = fsolve(rating_curve_intercept, Q_i, args=(self.L, self.P, self.a, self.b,
-                                                          self.lateral, self.elevation_shifted,
-                                                          'conjugate'))[0]
-        Q_max = fsolve(rating_curve_intercept, Q_i, args=(self.L, self.P, self.a, self.b,
-                                                          self.lateral, self.elevation_shifted,
-                                                          'flip'))[0]
+        """Calculates Qmin and Qmax for Type C jump (in cfs) using VDT interpolation."""
+
+        def obj_func(Q_guess, which):
+            Q = Q_guess[0] if isinstance(Q_guess, (list, np.ndarray)) else Q_guess
+            if Q <= 0.001: return 1e6
+
+            # 1. Get Tailwater from VDT Interpolation
+            y_t = self.get_tailwater_depth(Q)
+
+            # 2. Get Hydraulics for this Q
+            if which == 'flip':
+                y_target = compute_y_flip(Q, self.L, self.P)
+            elif which == 'conjugate':
+                y_1 = solve_y1_downstream(Q, self.L, self.P, self.lateral, self.elevation_shifted)
+                y_target = solve_y2_jump(Q, y_1, self.lateral, self.elevation_shifted)
+            else:
+                return 1e6
+
+            return y_target - y_t
+
+        Q_i = np.array([10.0]) # Initial guess
+
+        # Q_max: Tailwater drops below Flip Bucket (y_t = y_flip)
+        Q_max = fsolve(obj_func, Q_i, args=('flip',))[0]
+
+        # Q_min: Tailwater drops below Sequent Depth (y_t = y_2)
+        Q_min = fsolve(obj_func, Q_i, args=('conjugate',))[0]
+
         return Q_min * 35.315, Q_max * 35.315
 
     def plot_fdc(self, ax: Axes):
@@ -204,10 +292,12 @@ class CrossSection:
 
         try:
             Q_conj, Q_flip = self.get_dangerous_flow_range()
-            P_flip = get_prob_from_Q(Q_flip, fdc_df)
-            P_conj = get_prob_from_Q(Q_conj, fdc_df)
-            ax.axvline(x=P_flip, color='black', linestyle='--', label=f'Flip and Conjugate Depth Intersections')
-            ax.axvline(x=P_conj, color='black', linestyle='--')
+            # Safety check if solver failed (returned negative or tiny flow)
+            if Q_conj > 1 and Q_flip > 1:
+                P_flip = get_prob_from_Q(Q_flip, fdc_df)
+                P_conj = get_prob_from_Q(Q_conj, fdc_df)
+                ax.axvline(x=P_flip, color='black', linestyle='--', label=f'Flip and Conjugate Depth Intersections')
+                ax.axvline(x=P_conj, color='black', linestyle='--')
         except Exception as e:
             print(f"Could not calc dangerous intersections: {e}")
 
@@ -327,7 +417,7 @@ class Dam:
                         H_i, P_i = solve_weir_geometry(self.baseflow, self.weir_length, y_i, delta_wse)
 
                         # Drowning check
-                        y_1 = solve_y1_downstream(self.baseflow, H_i, P_i, self.weir_length,
+                        y_1 = solve_y1_downstream(self.baseflow, self.weir_length, P_i,
                                                   xs.lateral, xs.elevation_shifted)
                         if y_1 > P_i:
                             print(f"Warning: Dam {self.id} XS {i} appears drowned.")
@@ -360,10 +450,10 @@ class Dam:
 
                     if pd.notna(Q) and xs.P:
                         try:
-                            y_t = xs.a * Q ** xs.b
-                            # H changes with Q
-                            H = weir_H(Q, xs.L, xs.P)
-                            y_1 = solve_y1_downstream(Q, H, xs.P, xs.L, xs.lateral, xs.elevation_shifted)
+                            # Use VDT interpolation for y_t
+                            y_t = xs.get_tailwater_depth(Q)
+
+                            y_1 = solve_y1_downstream(Q, xs.L, xs.P, xs.lateral, xs.elevation_shifted)
                             y_2 = solve_y2_jump(Q, y_1, xs.lateral, xs.elevation_shifted)
                             y_flip = compute_y_flip(Q, xs.L, xs.P)
                             jump = hydraulic_jump_type(y_2, y_t, y_flip)

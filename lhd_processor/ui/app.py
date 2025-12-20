@@ -146,8 +146,7 @@ def main():
 
                 # Analysis Tab
                 "analysis_db": analysis_tab.db_entry.get(),
-                "analysis_res": analysis_tab.res_entry.get(),
-                "analysis_model": analysis_tab.model_var.get()
+                "analysis_res": analysis_tab.res_entry.get()
             }
 
             # Save using utils (ensure you added save_settings to utils.py!)
@@ -193,7 +192,6 @@ def main():
             # Analysis Tab
             set_entry(analysis_tab.db_entry, "analysis_db")
             set_entry(analysis_tab.res_entry, "analysis_res")
-            set_var(analysis_tab.model_var, "analysis_model")
 
             print("Startup settings loaded successfully.")
 
