@@ -50,7 +50,6 @@ def setup_analysis_tab(parent_tab):
     ttk.Button(path_frame, text="Select...", command=select_res).grid(row=1, column=2, padx=5, pady=5)
 
     # Row 2: Run Button
-    # Moved up from row 3 since we removed the Streamflow Source input
     run_btn = ttk.Button(path_frame, text="3. Analyze & Save All Dam Data", command=start_analysis)
     run_btn.grid(row=2, column=0, columnspan=3, padx=5, pady=10, sticky=tk.EW)
 
@@ -59,10 +58,16 @@ def setup_analysis_tab(parent_tab):
     fig_frame.pack(pady=10, padx=10, fill="x")
     fig_frame.columnconfigure(1, weight=1)
 
+    # Row 0: Dropdown + Refresh Button
     ttk.Label(fig_frame, text="Dam to Display:").grid(row=0, column=0, padx=5, pady=5)
+
     dam_dropdown = ttk.Combobox(fig_frame, state="readonly")
     dam_dropdown.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
 
+    # NEW: Refresh Button
+    ttk.Button(fig_frame, text="Refresh", command=update_dropdown).grid(row=0, column=2, padx=5, pady=5)
+
+    # Checkboxes
     chk_xs = tk.BooleanVar(value=False);
     ttk.Checkbutton(fig_frame, text="Cross-Sections", variable=chk_xs).grid(row=1, column=0, sticky=tk.W)
     chk_rc = tk.BooleanVar(value=False);
@@ -86,43 +91,64 @@ def setup_analysis_tab(parent_tab):
 # --- Event Handlers ---
 def select_db():
     f = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
-    if f: db_entry.delete(0, tk.END); db_entry.insert(0, f)
+    if f:
+        db_entry.delete(0, tk.END)
+        db_entry.insert(0, f)
+        # Auto-update if possible
+        update_dropdown()
 
 
 def select_res():
     d = filedialog.askdirectory()
     if d:
-        res_entry.delete(0, tk.END);
+        res_entry.delete(0, tk.END)
         res_entry.insert(0, d)
-        update_dropdown()
 
 
 def update_dropdown():
-    results_dir = res_entry.get()
+    """
+    Refreshes the 'Dam to Display' list by querying the database for
+    sites that have actual Hydraulic Results or Cross-Section data.
+    """
     db_path = db_entry.get()
 
-    if not os.path.isdir(results_dir) or not os.path.isfile(db_path):
+    if not os.path.isfile(db_path):
         return
 
     try:
-        # Use DataManager to read IDs
+        # 1. Load the Database (Force reload from disk)
         db = DatabaseManager(db_path)
-        if db.sites.empty: return
 
-        dam_ids = db.sites['site_id'].dropna().astype(int).astype(str).tolist()
+        # 2. Find IDs that exist in either 'results' (Hydraulics) or 'xsections' (Geometry)
+        # This fulfills the request to "look at rows that actually have results"
+        ids_res = set(db.results['site_id'].dropna().unique())
+        ids_xs = set(db.xsections['site_id'].dropna().unique())
 
-        # Check which have results
-        successes = []
-        for lhd_id in dam_ids:
-            run_dir = os.path.join(results_dir, lhd_id)
-            if os.path.exists(os.path.join(run_dir, "VDT", f"{lhd_id}_Local_VDT_Database.gpkg")):
-                successes.append(lhd_id)
+        # Union them to be safe (in case a dam has geometry but no incident results yet)
+        valid_ids_raw = ids_res.union(ids_xs)
 
-        dams_sorted = sorted([int(x) for x in successes])
-        dams = ["All Dams"] + [str(d) for d in dams_sorted]
+        # Clean and Sort
+        valid_ids = []
+        for x in valid_ids_raw:
+            try:
+                valid_ids.append(int(x))
+            except:
+                pass
+        valid_ids.sort()
+
+        # 3. Update Dropdown
+        dams = ["All Dams"] + [str(d) for d in valid_ids]
         dam_dropdown['values'] = dams
-        if dams: dam_dropdown.set(dams[0])
-        utils.set_status(f"Found {len(dams) - 1} processed dams.")
+
+        # Preserve selection if it's still valid, otherwise default to "All Dams"
+        current = dam_dropdown.get()
+        if current in dams:
+            dam_dropdown.set(current)
+        elif dams:
+            dam_dropdown.set(dams[0])
+
+        utils.set_status(f"Refreshed list: Found {len(valid_ids)} dams with analysis data.")
+
     except Exception as e:
         utils.set_status(f"Error updating dropdown: {e}")
 
@@ -146,6 +172,7 @@ def process_single_dam_analysis(dam_id, xlsx_path, res_dir):
         return True, dam_id, dam.site_data, xs_data, res_data, None
     except Exception as e:
         return False, dam_id, None, None, None, str(e)
+
 
 # --- Helpers ---
 def generate_summary_charts(db_path, filter_id=None):
@@ -284,10 +311,13 @@ def threaded_analysis():
         utils.set_status("Saving all results to database...")
         db.save()
         utils.set_status("Results saved.")
+
+        # AUTO-REFRESH LIST AFTER RUN
+        utils.get_root().after(0, update_dropdown)
+
         messagebox.showinfo("Success", "Parallel analysis complete.")
     except Exception as e:
         utils.set_status(f"Analysis failed: {e}")
-        # Print full traceback for debugging if needed
         import traceback
         traceback.print_exc()
     finally:
@@ -306,15 +336,17 @@ def threaded_display():
         filter_id = None  # Default to None (implies "All" for summary charts)
 
         if dam_sel == "All Dams":
-            # Fetch all valid IDs from the database
+            # Fetch all valid IDs from the database (USING THE NEW LOGIC)
             db = DatabaseManager(xlsx_path)
-            if not db.sites.empty:
-                # Filter for sites that actually have results folders
-                all_ids = db.sites['site_id'].dropna().astype(int).tolist()
-                target_dams = [
-                    d for d in all_ids
-                    if os.path.exists(os.path.join(res_dir, str(d), "VDT"))
-                ]
+
+            # Find IDs that have results or cross-section data in the DB
+            # We use a set union to catch dams that might have one but not the other
+            ids_res = set(db.results['site_id'].dropna().unique())
+            ids_xs = set(db.xsections['site_id'].dropna().unique())
+
+            valid_ids = sorted([int(x) for x in ids_res.union(ids_xs)])
+            target_dams = valid_ids
+
         elif dam_sel:
             # Single dam selection
             try:
@@ -340,6 +372,12 @@ def threaded_display():
                 utils.set_status(f"Generating plots for Dam {d_id} ({idx + 1}/{total})...")
 
                 try:
+                    # Check if VDT folder exists before trying to load
+                    # (Even if results exist in DB, we need files for some plots like maps)
+                    if not os.path.exists(os.path.join(res_dir, str(d_id), "VDT")):
+                        print(f"Skipping plots for Dam {d_id}: Missing VDT folder.")
+                        continue
+
                     # Initialize Dam Object
                     dam = AnalysisDam(d_id, db, base_results_dir=res_dir)
                     dam.load_results()
@@ -371,8 +409,10 @@ def threaded_display():
                     print(f"Skipping plots for Dam {d_id} due to error: {e}")
 
         # Pass to main thread to display in Carousel
-        # WARNING: If "All Dams" creates hundreds of figures, this might slow down the UI.
         utils.get_root().after(0, carousel.load_figures, figs)
+
+        # Notify user of completion (Scheduled on main thread)
+        utils.get_root().after(0, lambda: messagebox.showinfo("Success", f"Generated {len(figs)} figures."))
 
     except Exception as e:
         utils.set_status(f"Error displaying: {e}")

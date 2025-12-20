@@ -87,36 +87,53 @@ def calc_froude_custom(Q, y, x_coords, y_coords):
 
 
 def solve_y1_downstream(Q, L, P, x_coords, y_coords):
+    # 1. Calculate Available Energy
     H = weir_H(Q, L)
     A_o = L * H
     V_o = Q / A_o
-    E_total = P + H + (V_o ** 2) / (2 * g)  # Energy relative to channel bed
+    E_total = P + H + (V_o ** 2) / (2 * g)
 
+    # Objective function: E_calculated - E_available
     def energy_obj(y1):
         y1_v = y1[0] if isinstance(y1, np.ndarray) else y1
-        if y1_v <= 0: return 1e9
-        A1, y_c1 = get_geometry_props(y1_v, x_coords, y_coords)
-
-        # E = y + V^2/2g
+        if y1_v <= 0.001: return 1e5 + abs(y1_v) * 1e5  # Smooth penalty
+        A1, _ = get_geometry_props(y1_v, x_coords, y_coords)
+        if A1 <= 0: return 1e9
         E_toe = y1_v + (Q ** 2) / (2 * g * A1 ** 2)
         return E_toe - E_total
 
-    # 1. Try finding a root with a small guess (supercritical)
-    y1_guess = fsolve(energy_obj, x0=0.1)[0]
-
-    # 2. Verify Supercritical Flow (Fr > 1)
-    Fr = calc_froude_custom(Q, y1_guess, x_coords, y_coords)
-
-    if Fr < 1.0:
-        # If the solver found the subcritical solution (deep water),
-        # try forcing a smaller guess closer to 0
+    try:
+        # ATTEMPT 1: Solve for Supercritical Depth using Energy
         y1_guess = fsolve(energy_obj, x0=0.01)[0]
-        Fr = calc_froude_custom(Q, y1_guess, x_coords, y_coords)
 
-        # Warning if it's still subcritical (physics might be breaking down or drowned)
-        if Fr < 1.0:
-            # Depending on use case, you might want to raise an error or just return it
-            # For now, we return it but know it might be submerged.
+    except RuntimeWarning:
+        # ATTEMPT 2: Solver failed (likely Choked Flow).
+        # Try to find Custom Critical Depth (where Fr = 1)
+
+        def froude_obj(y_c):
+            # Returns 0 when Fr = 1
+            fr = calc_froude_custom(Q, y_c, x_coords, y_coords)
+            return fr - 1.0
+
+        try:
+            # Guess critical depth near the weir head H
+            y1_guess = fsolve(froude_obj, x0=H)[0]
+
+        except:
+            # ATTEMPT 3: The geometry is likely too noisy for the solver.
+            # Use Analytical Rectangular Critical Depth as the ultimate failsafe.
+            # y_c = (q^2 / g)^(1/3)
+            q = Q / L
+            y1_guess = (q ** 2 / g) ** (1 / 3)
+
+    # Final Sanity Check: Ensure we didn't find the Subcritical (deep) solution by mistake
+    Fr = calc_froude_custom(Q, y1_guess, x_coords, y_coords)
+    if Fr < 1.0:
+        try:
+            # Force a look for the supercritical root
+            y1_super = fsolve(energy_obj, x0=0.001)[0]
+            if y1_super > 0: y1_guess = y1_super
+        except:
             pass
 
     return y1_guess

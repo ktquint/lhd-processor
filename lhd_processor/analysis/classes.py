@@ -268,12 +268,20 @@ class CrossSection:
         Q_i = np.array([10.0]) # Initial guess
 
         # Q_max: Tailwater drops below Flip Bucket (y_t = y_flip)
-        Q_max = fsolve(obj_func, Q_i, args=('flip',))[0]
+        try:
+            Q_max = fsolve(obj_func, Q_i, args=('flip',))[0]
+        except Exception:
+            # Fallback if no intersection found (e.g. extremely high flow or invalid range)
+            Q_max = self.max_Q
 
         # Q_min: Tailwater drops below Sequent Depth (y_t = y_2)
-        Q_min = fsolve(obj_func, Q_i, args=('conjugate',))[0]
+        try:
+            Q_min = fsolve(obj_func, Q_i, args=('conjugate',))[0]
+        except Exception:
+            # Fallback to 0 if no intersection found (assumes danger starts immediately)
+            Q_min = 0.0
 
-        return Q_min * 35.315, Q_max * 35.315
+        return Q_min, Q_max
 
     def plot_fdc(self, ax: Axes):
         flow_data = self.parent_dam.get_flow_data()
@@ -292,6 +300,8 @@ class CrossSection:
 
         try:
             Q_conj, Q_flip = self.get_dangerous_flow_range()
+            Q_conj *= 35.315
+            Q_flip *= 35.315
             # Safety check if solver failed (returned negative or tiny flow)
             if Q_conj > 1 and Q_flip > 1:
                 P_flip = get_prob_from_Q(Q_flip, fdc_df)
@@ -388,7 +398,7 @@ class Dam:
                         xs.set_dam_height(P)
                         # Estimate H based on baseflow and P (needed for some plots)
                         if self.baseflow > 0:
-                            H = weir_H(self.baseflow, self.weir_length, P)
+                            H = weir_H(self.baseflow, self.weir_length)
                             xs.set_head(H)
                 except Exception as e:
                     print(f"Error loading parameters for XS {xs.index}: {e}")
