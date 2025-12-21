@@ -4,7 +4,7 @@
     the cross-sections of the low-head dams.
 """
 import numpy as np
-from scipy.optimize import fsolve
+from scipy.optimize import fsolve, root_scalar
 
 # global vars
 g = 9.81 # m/s**2
@@ -95,8 +95,6 @@ def get_geometry_props(water_depth, xs1, xs2, dist):
 
     # 2. Combine into one continuous channel (Left -> Right)
     # x_l is [0, -dist, ...], so reverse it to be [..., -dist, 0]
-    # x_r is [0, dist, ...], skip 0 to avoid duplicate center point
-
     x_combined = np.concatenate([x_l[::-1], x_r[1:]])
     y_combined = np.concatenate([y_l[::-1], y_r[1:]])
 
@@ -105,19 +103,24 @@ def get_geometry_props(water_depth, xs1, xs2, dist):
 
     # 3. Calculate Area (Integration of depth)
     depths = water_depth - y_combined
-    # Ensure depths are non-negative (floating point errors)
     depths[depths < 0] = 0
 
-    Area = np.trapezoid(depths, x_combined)
+    # FIX: Check for numpy 2.0 'trapezoid', otherwise use legacy 'trapz'
+    if hasattr(np, 'trapezoid'):
+        Area = np.trapezoid(depths, x_combined)
+    else:
+        Area = np.trapz(depths, x_combined)
 
     if Area <= 0:
         return 0.0001, 0.0001
 
     # 4. Calculate Centroid
-    # Moment of Area about the surface (y = water_depth)
-    # M_surface = Integral( 0.5 * depth^2 ) dx
-    integrand = 0.5 * depths**2
-    Moment_surface = np.trapezoid(integrand, x_combined)
+    integrand = 0.5 * depths ** 2
+
+    if hasattr(np, 'trapezoid'):
+        Moment_surface = np.trapezoid(integrand, x_combined)
+    else:
+        Moment_surface = np.trapz(integrand, x_combined)
 
     y_cent = Moment_surface / Area
 
@@ -142,62 +145,110 @@ def calc_froude_custom(Q, y, xs1, xs2, dist):
 
 
 def solve_y1_downstream(Q, L, P, xs1, xs2, dist):
-    # 1. Calculate Available Energy
+    """
+    Robustly solves for the supercritical toe depth (y1) using Specific Energy.
+    Scans from the bottom up to ensure we don't accidentally find the subcritical root.
+    """
+    # 1. Calculate Available Total Energy (Bernoulli)
+    # H = Head over weir
     H = weir_H(Q, L)
-    A_o = L * H
-    V_o = Q / A_o
+
+    # Velocity head upstream (V_o)
+    # Approximation: Area upstream ~ L * (P + H)
+    # If the dam is high, V_o is small, but we include it for accuracy.
+    A_dam = L * (P + H)
+    V_o = Q / A_dam
     E_total = P + H + (V_o ** 2) / (2 * g)
 
-    # Objective function: E_calculated - E_available
-    def energy_obj(y1):
-        y1_v = y1[0] if isinstance(y1, np.ndarray) else y1
-        if y1_v <= 0.001: return 1e5 + abs(y1_v) * 1e5
+    # 2. Define Residual Function (E_calc - E_total)
+    # We want this to be 0.
+    def energy_residual(y):
+        if y <= 0: return 1e9
+        A, _ = get_geometry_props(y, xs1, xs2, dist)
+        if A <= 0: return 1e9
 
-        A1, _ = get_geometry_props(y1_v, xs1, xs2, dist)
-        if A1 <= 0: return 1e9
+        # Specific Energy at this depth: Depth + Velocity Head
+        V = Q / A
+        E_calc = y + (V ** 2) / (2 * g)
 
-        E_toe = y1_v + (Q ** 2) / (2 * g * A1 ** 2)
-        return E_toe - E_total
+        return E_calc - E_total
 
-    try:
-        y1_guess = fsolve(energy_obj, x0=0.01)[0]
-    except RuntimeWarning:
-        # Fallback: Critical Depth
-        def froude_obj(y_c):
-            fr = calc_froude_custom(Q, y_c, xs1, xs2, dist)
-            return fr - 1.0
+    # 3. Scan for Bracket (The "Supercritical Scanner")
+    # We know y1 is small. We start at 1mm and scan up.
+    # At y ~ 0, Energy is +Inf (Residual > 0)
+    # We look for the first depth where Energy < E_total (Residual < 0)
 
+    low_bound = 0.001
+    high_bound = 0.001
+    found_bracket = False
+
+    # Scan upwards geometrically (1mm, 2mm, 4mm, 8mm...)
+    # We stop if we exceed the Dam Height (P) because y1 can't be that high.
+    for i in range(20):
+        if energy_residual(high_bound) < 0:
+            found_bracket = True
+            break
+        high_bound *= 1.5  # Increase step size
+        if high_bound > P:
+            break
+
+    # 4. Solve
+    if found_bracket:
         try:
-            y1_guess = fsolve(froude_obj, x0=H)[0]
-        except:
-            q = Q / L
-            y1_guess = (q ** 2 / g) ** (1 / 3)
-
-    # Sanity Check
-    Fr = calc_froude_custom(Q, y1_guess, xs1, xs2, dist)
-    if Fr < 1.0:
-        try:
-            y1_super = fsolve(energy_obj, x0=0.001)[0]
-            if y1_super > 0: y1_guess = y1_super
-        except:
-            pass
-
-    return y1_guess
+            # We guaranteed the root is between low_bound and high_bound
+            sol = root_scalar(energy_residual, bracket=[low_bound, high_bound], method='brentq')
+            return sol.root
+        except ValueError:
+            return 0.1  # Fallback
+    else:
+        # If we scanned all the way up to the dam height and Energy was ALWAYS too high,
+        # it means the flow is "choked" or the dam is drowned out.
+        # We return Critical Depth or just a failed flag.
+        return 0.1
 
 
 def solve_y2_jump(Q, y1, xs1, xs2, dist):
+    # 1. Calculate Momentum at y1 (Supercritical side)
     A1, y_cj1 = get_geometry_props(y1, xs1, xs2, dist)
+
+    # Safety check for bad y1
+    if A1 <= 0.0001: return 0.0
+
     M1 = (Q ** 2 / (g * A1)) + (A1 * y_cj1)
 
-    def momentum_obj(y2):
-        y2_v = y2[0] if isinstance(y2, np.ndarray) else y2
-        if y2_v <= 0: return 1e9
-        A2, y_cj2 = get_geometry_props(y2_v, xs1, xs2, dist)
+    def momentum_residual(y_candidate):
+        if y_candidate <= 0: return -1e9
+        A2, y_cj2 = get_geometry_props(y_candidate, xs1, xs2, dist)
+        if A2 <= 0: return -1e9
         M2 = (Q ** 2 / (g * A2)) + (A2 * y_cj2)
         return M2 - M1
 
-    y2_sol = fsolve(momentum_obj, x0=y1 * 2)[0]
-    return y2_sol
+    # 2. Find a valid bracket for the Subcritical Root
+    lower_bound = y1 * 1.05  # Just above y1
+    upper_bound = y1 * 20.0
+
+    # FIX: Robustly expand upper bound until M2 > M1
+    try:
+        f_upper = momentum_residual(upper_bound)
+        iter_count = 0
+
+        # Keep doubling until we find a depth with enough momentum
+        while f_upper < 0 and iter_count < 10:
+            upper_bound *= 2.0
+            f_upper = momentum_residual(upper_bound)
+            iter_count += 1
+
+        # If we still can't balance momentum, fail gracefully
+        if f_upper < 0:
+            return 0.0
+
+        # 3. Use Brent's Method
+        sol = root_scalar(momentum_residual, bracket=[lower_bound, upper_bound], method='brentq')
+        return sol.root
+
+    except ValueError:
+        return 0.0
+
 
 def Fr_eq(Fr, x):
     A = (9 / (4 * C_W**2)) * 0.5 * Fr**2
