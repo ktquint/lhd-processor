@@ -196,9 +196,8 @@ def solve_y2_jump(Q, y1, xs1, xs2, dist):
         M2 = (Q ** 2 / (g * A2)) + (A2 * y_cj2)
         return M2 - M1
 
-    y2_sol = fsolve(momentum_obj, x0=y1 * 5)[0]
+    y2_sol = fsolve(momentum_obj, x0=y1 * 2)[0]
     return y2_sol
-
 
 def Fr_eq(Fr, x):
     A = (9 / (4 * C_W**2)) * 0.5 * Fr**2

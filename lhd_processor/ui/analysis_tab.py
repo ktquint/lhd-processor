@@ -64,8 +64,8 @@ def setup_analysis_tab(parent_tab):
     dam_dropdown = ttk.Combobox(fig_frame, state="readonly")
     dam_dropdown.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
 
-    # NEW: Refresh Button
-    ttk.Button(fig_frame, text="Refresh", command=update_dropdown).grid(row=0, column=2, padx=5, pady=5)
+    # Refresh Button
+    ttk.Button(fig_frame, text="↻", command=update_dropdown).grid(row=0, column=2, padx=5, pady=5)
 
     # Checkboxes
     chk_xs = tk.BooleanVar(value=False);

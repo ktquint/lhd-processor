@@ -40,10 +40,10 @@ def setup_carousel_ui(parent_frame):
     canvas_frame = ttk.Frame(viewer_frame)
     canvas_frame.pack(fill="both", expand=True)
 
-    # === BIND RESIZE EVENT HERE ===
+    # === BIND RESIZE EVENT ===
+    # This is the key to making it dynamic.
+    # It fires whenever the frame size changes (e.g. user drags window corner).
     canvas_frame.bind("<Configure>", on_resize)
-
-    # Note: We don't pack viewer_frame yet; it appears only when needed.
 
 
 def on_resize(event):
@@ -52,18 +52,23 @@ def on_resize(event):
         w = event.width
         h = event.height
 
-        # Prevent errors if the window is being destroyed or extremely small
-        if w > 50 and h > 50:
-            fig = current_figure_canvas.figure
-            dpi = fig.get_dpi()
-            # Update figure size in inches
-            fig.set_size_inches(w / dpi, h / dpi)
+        # Filter out invalid or tiny sizes (initialization artifacts)
+        if w < 10 or h < 10:
+            return
 
-            # Optional: Re-tighten layout to prevent clipped labels
-            # fig.tight_layout()
+        fig = current_figure_canvas.figure
+        dpi = fig.get_dpi()
 
-            # Redraw efficiently
-            current_figure_canvas.draw_idle()
+        # Resize figure to match the frame exactly
+        fig.set_size_inches(w / dpi, h / dpi)
+
+        # Use tight_layout to prevent labels from being cut off at new sizes
+        try:
+            fig.tight_layout()
+        except:
+            pass
+
+        current_figure_canvas.draw_idle()
 
 
 def clear_figure_carousel():
@@ -96,28 +101,25 @@ def display_figure(index):
 
     fig, title = current_figure_list[index]
 
-    # === FIX FOR GUI STRETCHING ===
-    # Matplotlib figures have a default size (often 640x480).
-    # If we pack this directly, it forces the Tkinter window to expand.
-    # By setting a small initial size, we ensure it fits in the *current*
-    # space. The 'on_resize' handler or sync block below will immediately
-    # scale it UP to fill the frame properly.
-    fig.set_size_inches(2, 2)
-    # ==============================
+    # === SIZE HANDLING ===
+    # 1. Check if the frame already has a valid size (from the window geometry).
+    #    If so, use it immediately.
+    # 2. If not (first load), set a reasonable default (5x4) to prevent
+    #    the window from "exploding" or stretching out weirdly.
 
-    # Create new canvas
+    current_w = canvas_frame.winfo_width()
+    current_h = canvas_frame.winfo_height()
+    dpi = fig.get_dpi()
+
+    if current_w > 50 and current_h > 50:
+        fig.set_size_inches(current_w / dpi, current_h / dpi)
+    else:
+        fig.set_size_inches(5, 4)  # Safe default that won't stretch GUI
+
+    # Pack the canvas
     current_figure_canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
-    current_figure_canvas.draw()
     current_figure_canvas.get_tk_widget().pack(fill="both", expand=True)
-
-    # === FORCE INITIAL SIZE SYNC ===
-    # This ensures the new figure adopts the current window size immediately
-    if canvas_frame.winfo_width() > 50:
-        w = canvas_frame.winfo_width()
-        h = canvas_frame.winfo_height()
-        dpi = fig.get_dpi()
-        fig.set_size_inches(w / dpi, h / dpi)
-        current_figure_canvas.draw_idle()
+    current_figure_canvas.draw()
 
     label_var.set(f"{title} ({index + 1} of {len(current_figure_list)})")
 
@@ -141,7 +143,12 @@ def load_figures(figures_list):
 
     if figures_list:
         current_figure_list = figures_list
+        # Ensure the viewer expands to fill available space
         viewer_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Force a geometry update so we know the size before drawing
+        viewer_frame.update_idletasks()
+
         display_figure(0)
     else:
         utils.set_status("Analysis complete. No figures were selected for display.")
