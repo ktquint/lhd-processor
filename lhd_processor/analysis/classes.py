@@ -17,7 +17,8 @@ from .hydraulics import (solve_weir_geometry,
                          solve_y2_jump,
                          weir_H,
                          compute_y_flip,
-                         solve_y1_downstream)
+                         solve_y1_downstream,
+                         get_geometry_props)
 
 from .utils import (merge_arc_results,
                     merge_databases,
@@ -38,13 +39,18 @@ class CrossSection:
         self.lat = xs_row['Lat']
         self.lon = xs_row['Lon']
         self.index = index
+
+        # FIX: Handle NaN in Index or Weir Length to prevent "float NaN to int" crash
+        safe_idx = self.index if pd.notnull(self.index) else 1
+        safe_L = self.L if pd.notnull(self.L) else 10.0
+
         if self.index == 0:
             self.location = 'Upstream'
-            self.distance = int(self.L)
+            self.distance = int(safe_L)
             self.fatal_qs = None
         else:
             self.location = 'Downstream'
-            self.distance = int(self.index * self.L)
+            self.distance = int(safe_idx * safe_L)
             self.fatal_qs = self.parent_dam.fatal_flows
 
         # Legacy rating curve info
@@ -66,40 +72,31 @@ class CrossSection:
 
         # --- COORDINATE SYSTEM (0 to Total Width) ---
         # Calculate Offset to shift min_x to 0
-        # Original Left: -dist, -2dist... -> min is approx -len * dist
         self.offset = len(self.y_1_raw) * self.dist
 
         # Map Raw Indices to Global X Coordinates
-        # Left Side (y_1_raw): Index 0 is near center (x=offset-dist), Index N is far left (x=0)
         self.x_1_coords = [self.offset - (i + 1) * self.dist for i in range(len(self.y_1_raw))]
-
-        # Right Side (y_2_raw): Index 0 is center (x=offset), Index N is far right
         self.x_2_coords = [self.offset + i * self.dist for i in range(len(self.y_2_raw))]
 
         # --- WATER SURFACE (Center-Out Logic) ---
-        # 1. Work Left from Center
         wse_x_left = []
         for i, elev in enumerate(self.y_1_raw):
             if elev <= self.wse and elev > INVALID_THRESHOLD:
                 wse_x_left.append(self.x_1_coords[i])
             else:
-                break  # Stop at bank or invalid data
+                break
 
-        # 2. Work Right from Center
         wse_x_right = []
         for i, elev in enumerate(self.y_2_raw):
             if elev <= self.wse and elev > INVALID_THRESHOLD:
                 wse_x_right.append(self.x_2_coords[i])
             else:
-                break  # Stop at bank or invalid data
+                break
 
-        # Combine for plotting (Left-to-Right Order)
-        # wse_x_left collected Center->Left, so reverse it
         self.water_lateral = wse_x_left[::-1] + wse_x_right
         self.water_elevation = [self.wse] * len(self.water_lateral)
 
         # --- FULL BED PROFILE (For Plotting) ---
-        # Combine Left (Reversed) + Right
         x_full = self.x_1_coords[::-1] + self.x_2_coords
         y_full = self.y_1_raw[::-1] + self.y_2_raw
 
@@ -114,6 +111,22 @@ class CrossSection:
         self.bed_elevation = min(y_clean) if y_clean else 0
         self.elevation_shifted = self.elevation - self.bed_elevation
         self.lateral = np.array(x_clean)
+
+        # --- PREPARE HYDRAULIC PROFILES (Shifted & Cleaned) ---
+        # Creates relative depth profiles (Depth = Elev - Bed_Elev) for the solver.
+        def _clean_shift(profile, bed):
+            valid = []
+            if not profile: return np.array([0.0, 0.0])
+            for v in profile:
+                if v <= INVALID_THRESHOLD:
+                    break
+                valid.append(v)
+            if not valid:
+                return np.array([0.0, 0.0])
+            return np.array(valid) - bed
+
+        self.y_1_shifted = _clean_shift(self.y_1_raw, self.bed_elevation)
+        self.y_2_shifted = _clean_shift(self.y_2_raw, self.bed_elevation)
 
         self.P = None
         self.H = None
@@ -144,7 +157,7 @@ class CrossSection:
         else:
             self.vdt_Q = np.array([])
             self.vdt_depth = np.array([])
-            print(f"Warning: No valid q_X / wse_X columns found for XS {self.index}.")
+            # print(f"Warning: No valid q_X / wse_X columns found for XS {self.index}.")
 
     def set_dam_height(self, P):
         self.P = P
@@ -161,34 +174,30 @@ class CrossSection:
         fig = Figure(figsize=(10, 6))
         ax = fig.add_subplot(111)
 
-        # 1. Plot Bed
         ax.plot(self.lateral, self.elevation, color='black', label='Cross-Section with Bathymetry Estimation')
 
-        # 2. Calculate & Plot Upstream/Crest Geometry (Center-Out Logic)
         if self.index > 0:
             try:
                 upstream_xs = self.parent_dam.cross_sections[0]
                 wse_upstream = upstream_xs.wse
 
-                # Center-Out Logic for Upstream WSE
                 us_x_left = []
                 for i, elev in enumerate(self.y_1_raw):
                     if elev <= wse_upstream and elev > -1e5:
                         us_x_left.append(self.x_1_coords[i])
                     else:
-                        break  # Stop at bank
+                        break
 
                 us_x_right = []
                 for i, elev in enumerate(self.y_2_raw):
                     if elev <= wse_upstream and elev > -1e5:
                         us_x_right.append(self.x_2_coords[i])
                     else:
-                        break  # Stop at bank
+                        break
 
                 upstream_lateral = us_x_left[::-1] + us_x_right
 
                 if upstream_lateral:
-                    # Calc Geometry
                     Q_b = self.parent_dam.baseflow
                     y_t = self.wse - self.bed_elevation
                     delta_wse = wse_upstream - self.wse
@@ -206,14 +215,12 @@ class CrossSection:
             except Exception as e:
                 print(f"Could not plot derived dam lines for XS {self.index}: {e}")
 
-        # 3. Plot Current Water Surface
         if len(self.water_lateral) > 0:
             ax.plot(self.water_lateral, self.water_elevation, color='dodgerblue', linestyle='--',
                     label=f'Water Surface Elevation: {round(self.wse, 1)} m')
 
-        # 4. Formatting - ZOOM to Thalweg +/- Weir Length
         thalweg_x = self.offset
-        ax.set_xlim(thalweg_x - self.L*2.5, thalweg_x + self.L*2.5)
+        ax.set_xlim(thalweg_x - self.L * 2.5, thalweg_x + self.L * 2.5)
 
         ax.set_xlabel('Lateral Distance (m)')
         ax.set_ylabel('Elevation (m)')
@@ -253,9 +260,9 @@ class CrossSection:
 
         for i, Q in enumerate(Qs):
             Y_Flip = compute_y_flip(Q, self.L, self.P)
-            # Updated to pass raw profiles
-            Y_Conj1 = solve_y1_downstream(Q, self.L, self.P, self.y_1_raw, self.y_2_raw, self.dist)
-            Y_Conj2 = solve_y2_jump(Q, Y_Conj1, self.y_1_raw, self.y_2_raw, self.dist)
+            # Use shifted profiles
+            Y_Conj1 = solve_y1_downstream(Q, self.L, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
+            Y_Conj2 = solve_y2_jump(Q, Y_Conj1, self.y_1_shifted, self.y_2_shifted, self.dist)
             Y_Flips.append(Y_Flip)
             Y_Conjugates.append(Y_Conj2)
 
@@ -298,9 +305,9 @@ class CrossSection:
             if which == 'flip':
                 y_target = compute_y_flip(Q, self.L, self.P)
             elif which == 'conjugate':
-                # Updated to pass raw profiles
-                y_1 = solve_y1_downstream(Q, self.L, self.P, self.y_1_raw, self.y_2_raw, self.dist)
-                y_target = solve_y2_jump(Q, y_1, self.y_1_raw, self.y_2_raw, self.dist)
+                # Use shifted profiles
+                y_1 = solve_y1_downstream(Q, self.L, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
+                y_target = solve_y2_jump(Q, y_1, self.y_1_shifted, self.y_2_shifted, self.dist)
             else:
                 return 1e6
             return y_target - y_t
@@ -442,8 +449,9 @@ class Dam:
                     y_i = xs.wse - xs.bed_elevation
                     try:
                         H_i, P_i = solve_weir_geometry(self.baseflow, self.weir_length, y_i, delta_wse)
-                        # Updated to pass raw profiles
-                        y_1 = solve_y1_downstream(self.baseflow, self.weir_length, P_i, xs.y_1_raw, xs.y_2_raw, xs.dist)
+                        # Updated to pass shifted profiles
+                        y_1 = solve_y1_downstream(self.baseflow, self.weir_length, P_i, xs.y_1_shifted, xs.y_2_shifted,
+                                                  xs.dist)
                         if y_1 > P_i:
                             print(f"Warning: Dam {self.id} XS {i} appears drowned.")
                         xs.set_dam_height(P_i)
@@ -469,10 +477,19 @@ class Dam:
                     date = inc_row['date']
                     if pd.notna(Q) and xs.P:
                         try:
+                            g = 9.81
                             y_t = xs.get_tailwater_depth(Q)
-                            # Updated to pass raw profiles
-                            y_1 = solve_y1_downstream(Q, xs.L, xs.P, xs.y_1_raw, xs.y_2_raw, xs.dist)
-                            y_2 = solve_y2_jump(Q, y_1, xs.y_1_raw, xs.y_2_raw, xs.dist)
+                            # Updated to pass shifted profiles
+                            y_1 = solve_y1_downstream(Q, xs.L, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                            y_2 = solve_y2_jump(Q, y_1, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+
+                            # Calculate debug props
+                            A1, yc1 = get_geometry_props(y_1, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                            M1 = (Q ** 2 / (g * A1)) + (A1 * yc1) if A1 > 1e-6 else 0
+
+                            A2, yc2 = get_geometry_props(y_2, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                            M2 = (Q ** 2 / (g * A2)) + (A2 * yc2) if A2 > 1e-6 else 0
+
                             y_flip = compute_y_flip(Q, xs.L, xs.P)
                             jump = hydraulic_jump_type(y_2, y_t, y_flip)
                             hydro_results_list.append({
@@ -481,7 +498,12 @@ class Dam:
                                 'y_t': y_t,
                                 'y_flip': y_flip,
                                 'y_2': y_2,
-                                'jump_type': jump
+                                'jump_type': jump,
+                                'y_1': y_1,
+                                'A1': A1,
+                                'A2': A2,
+                                'M1': M1,
+                                'M2': M2
                             })
                         except:
                             pass
@@ -583,7 +605,8 @@ class Dam:
 
         upstream_xs = self.dam_gdf.iloc[0]
         upstream_idx = \
-        database_df[(database_df['Row'] == upstream_xs['Row']) & (database_df['Col'] == upstream_xs['Col'])].index[0]
+            database_df[(database_df['Row'] == upstream_xs['Row']) & (database_df['Col'] == upstream_xs['Col'])].index[
+                0]
         ax.axvline(x=upstream_idx, color='red', linestyle='--', label=f'Upstream Cross-Section')
 
         for i in range(1, len(self.dam_gdf)):

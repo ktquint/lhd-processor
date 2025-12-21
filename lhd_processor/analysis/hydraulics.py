@@ -27,8 +27,9 @@ def _get_active_profile(water_depth, xs_profile, dist, direction=1):
     x_active = []
     y_active = []
 
-    # Check if center is already dry
-    if not xs_profile or xs_profile[0] > water_depth:
+    # FIX: Use len() check because xs_profile might be a numpy array
+    # 'if not xs_profile' crashes on arrays with >1 element
+    if len(xs_profile) == 0 or xs_profile[0] > water_depth:
         return np.array([]), np.array([])
 
     for i, y_curr in enumerate(xs_profile):
