@@ -165,10 +165,6 @@ class CrossSection:
     def set_head(self, H):
         self.H = H
 
-    def get_tailwater_depth(self, Q):
-        if len(self.vdt_Q) == 0:
-            return self.a * Q ** self.b
-        return np.interp(Q, self.vdt_Q, self.vdt_depth)
 
     def plot_cross_section(self, save=True):
         fig = Figure(figsize=(10, 6))
@@ -203,6 +199,34 @@ class CrossSection:
                     delta_wse = wse_upstream - self.wse
                     H, P = solve_weir_geometry(Q_b, self.L, y_t, delta_wse)
 
+                    # --- ADDED: Calculate and Plot Sequent Depth (y2) ---
+                    y_1_calc = solve_y1_downstream(Q_b, self.L, P, self.y_1_shifted, self.y_2_shifted, self.dist)
+                    y_2_calc = solve_y2_jump(Q_b, y_1_calc, self.y_1_shifted, self.y_2_shifted, self.dist)
+                    y_2_elev = self.bed_elevation + y_2_calc
+
+                    # Find lateral extents for y2 line (Center -> Out)
+                    y2_x_left = []
+                    for i, elev in enumerate(self.y_1_raw):
+                        if y_2_elev >= elev > -1e5:
+                            y2_x_left.append(self.x_1_coords[i])
+                        else:
+                            break
+
+                    y2_x_right = []
+                    for i, elev in enumerate(self.y_2_raw):
+                        if elev <= y_2_elev > -1e5:
+                            y2_x_right.append(self.x_2_coords[i])
+                        else:
+                            break
+
+                    y2_lateral = y2_x_left[::-1] + y2_x_right
+                    y2_elevs = [y_2_elev] * len(y2_lateral)
+
+                    if y2_lateral:
+                        ax.plot(y2_lateral, y2_elevs, color='green', linestyle='--',
+                                label=f'Sequent Depth Elevation: {round(y_2_elev, 1)} m')
+                    # ----------------------------------------------------
+
                     crest_elev_val = wse_upstream - H
                     upstream_elevs = [wse_upstream] * len(upstream_lateral)
                     crest_elevs = [crest_elev_val] * len(upstream_lateral)
@@ -236,24 +260,31 @@ class CrossSection:
         else:
             return None
 
+    def get_tailwater_depth(self, Q):
+        """
+        Calculates tailwater depth using the Power Law function (y = a*x^b).
+        Ignores VDT database values.
+        """
+        return self.a * Q ** self.b
+
     def create_rating_curve(self):
-        if len(self.vdt_Q) > 0:
-            x = self.vdt_Q
-            y = self.vdt_depth
-            label = f'Rating Curve (VDT Data) {self.distance}m {self.location}'
-        else:
-            x = np.linspace(0.01, self.max_Q, 100)
-            y = self.a * x ** self.b
-            label = f'Rating Curve (Power Law) {self.distance}m {self.location}'
+        """
+        Plots the rating curve using the Power Law function (y = a*x^b).
+        Ignores VDT database values.
+        """
+        x = np.linspace(0.01, self.max_Q, 100)
+        y = self.a * x ** self.b
+        label = f'Rating Curve (Power Law) {self.distance}m {self.location}'
         plt.plot(x, y, label=label)
 
     def plot_flip_sequent(self, ax):
-        if len(self.vdt_Q) > 0:
-            Qs = self.vdt_Q
-            Y_Ts = self.vdt_depth
-        else:
-            Qs = np.linspace(0.01, self.max_Q, 100)
-            Y_Ts = self.a * Qs ** self.b
+        """
+        Plots the Flip vs Sequent depth analysis using the Power Law for tailwater.
+        Ignores VDT database values.
+        """
+        # Always use linspace and power function
+        Qs = np.linspace(0.01, self.max_Q, 100)
+        Y_Ts = self.a * Qs ** self.b
 
         Y_Flips = []
         Y_Conjugates = []
@@ -275,6 +306,8 @@ class CrossSection:
         ax.set_xlabel('Discharge (ft$^{3}$/s)')
         ax.set_ylabel('Depth (ft)')
         ax.set_title(f'Submerged Hydraulic Jumps at Low-Head Dam No. {self.id}')
+
+
 
     def plot_fatal_flows(self, ax):
         if self.fatal_qs is None or len(self.fatal_qs) == 0:
@@ -312,7 +345,7 @@ class CrossSection:
                 return 1e6
             return y_target - y_t
 
-        Q_i = np.array([10.0])
+        Q_i = np.array([1.0])
         try:
             Q_max = fsolve(obj_func, Q_i, args=('flip',))[0]
         except Exception:

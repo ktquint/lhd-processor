@@ -1,16 +1,15 @@
 import os
 import threading
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
 import pandas as pd
-import matplotlib.pyplot as plt
+import tkinter as tk
 from matplotlib.figure import Figure
+from tkinter import ttk, filedialog, messagebox
 from dask.distributed import Client, LocalCluster, as_completed
 
 # Relative imports
-from ..analysis.classes import Dam as AnalysisDam
-from ..data_manager import DatabaseManager  # Import Manager
 from . import utils, carousel
+from ..data_manager import DatabaseManager  # Import Manager
+from ..analysis.classes import Dam as AnalysisDam
 
 # Module-level widgets
 db_entry = None
@@ -68,17 +67,17 @@ def setup_analysis_tab(parent_tab):
     ttk.Button(fig_frame, text="↻", command=update_dropdown).grid(row=0, column=2, padx=5, pady=5)
 
     # Checkboxes
-    chk_xs = tk.BooleanVar(value=False);
+    chk_xs = tk.BooleanVar(value=False)
     ttk.Checkbutton(fig_frame, text="Cross-Sections", variable=chk_xs).grid(row=1, column=0, sticky=tk.W)
-    chk_rc = tk.BooleanVar(value=False);
+    chk_rc = tk.BooleanVar(value=False)
     ttk.Checkbutton(fig_frame, text="Rating Curves", variable=chk_rc).grid(row=2, column=0, sticky=tk.W)
-    chk_map = tk.BooleanVar(value=False);
+    chk_map = tk.BooleanVar(value=False)
     ttk.Checkbutton(fig_frame, text="Location Map", variable=chk_map).grid(row=3, column=0, sticky=tk.W)
-    chk_wsp = tk.BooleanVar(value=False);
+    chk_wsp = tk.BooleanVar(value=False)
     ttk.Checkbutton(fig_frame, text="Water Surface Profile", variable=chk_wsp).grid(row=1, column=1, sticky=tk.W)
-    chk_fdc = tk.BooleanVar(value=False);
+    chk_fdc = tk.BooleanVar(value=False)
     ttk.Checkbutton(fig_frame, text="Flow Duration Curve", variable=chk_fdc).grid(row=2, column=1, sticky=tk.W)
-    chk_bar = tk.BooleanVar(value=False);
+    chk_bar = tk.BooleanVar(value=False)
     ttk.Checkbutton(fig_frame, text="Generate Bar Chart (All)", variable=chk_bar).grid(row=3, column=1, sticky=tk.W)
 
     display_btn = ttk.Button(parent_tab, text="4. Generate & Display Figures", command=start_display)
@@ -138,7 +137,8 @@ def update_dropdown():
 
         # 3. Update Dropdown
         dams = ["All Dams"] + [str(d) for d in valid_ids]
-        dam_dropdown['values'] = dams
+        # noinspection PyTypeHints
+        dam_dropdown["values"] = dams
 
         # Preserve selection if it's still valid, otherwise default to "All Dams"
         current = dam_dropdown.get()
@@ -155,9 +155,6 @@ def update_dropdown():
 
 def process_single_dam_analysis(dam_id, xlsx_path, res_dir):
     try:
-        from ..analysis.classes import Dam as AnalysisDam
-        from ..data_manager import DatabaseManager
-
         db = DatabaseManager(xlsx_path)
         # 1. Initialize (Loads geometry only - Fast)
         dam = AnalysisDam(dam_id, db, base_results_dir=res_dir)
@@ -228,6 +225,8 @@ def generate_summary_charts(db_path, filter_id=None):
                         c = 'blue'  # Type A/B
 
                     cap = 0.2
+                    # noinspection PyTypeChecker
+                    idx = float(idx)
                     ax.vlines(idx, y_2, y_flip, color='black', lw=1)
                     ax.hlines(y_2, idx - cap, idx + cap, color='black', lw=1)
                     ax.hlines(y_flip, idx - cap, idx + cap, color='black', lw=1)
@@ -412,7 +411,7 @@ def threaded_display():
         utils.get_root().after(0, carousel.load_figures, figs)
 
         # Notify user of completion (Scheduled on main thread)
-        utils.get_root().after(0, lambda: messagebox.showinfo("Success", f"Generated {len(figs)} figures."))
+        # utils.get_root().after(0, lambda: messagebox.showinfo("Success", f"Generated {len(figs)} figures."))
 
     except Exception as e:
         utils.set_status(f"Error displaying: {e}")

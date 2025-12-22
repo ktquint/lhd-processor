@@ -1,17 +1,17 @@
+import gc
 import os
 import json
 import threading
-import gc
 import pandas as pd
 import tkinter as tk
-from dask.distributed import Client, LocalCluster, as_completed
 from hsclient import HydroShare
 from tkinter import ttk, filedialog, messagebox
+from dask.distributed import Client, LocalCluster, as_completed
 
 # CLEAN IMPORT: Importing directly from the package
-from ..prep import Dam as PrepDam, rathcelon_input
-from ..data_manager import DatabaseManager
 from . import utils
+from ..data_manager import DatabaseManager
+from ..prep import Dam as PrepDam, rathcelon_input
 
 # Import Rathcelon carefully
 try:
@@ -258,8 +258,7 @@ def process_single_dam_rathcelon(dam_dict):
 
     dam_name = dam_dict.get('name', "Unknown Dam")
     try:
-        from rathcelon.classes import Dam as RD
-        dam_i = RD(**dam_dict)
+        dam_i = RathcelonDam(**dam_dict)
         dam_i.process_dam()
 
         del dam_i
@@ -438,7 +437,7 @@ def threaded_run_rathcelon():
             return
 
         total_cores = os.cpu_count() or 1
-        worker_count = 1 # max(1, int(total_cores/2))
+        worker_count = max(1, int(total_cores/2))
 
         utils.set_status(
             f"Skipping {skipped_count}. Initializing Dask (Workers: {worker_count}) for {count_to_run} dams...")

@@ -1,7 +1,6 @@
 import os
 import json
 import tkinter as tk
-from tkinter import ttk
 
 # Global variables shared across modules
 root = None

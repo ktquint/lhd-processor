@@ -4,11 +4,31 @@
     the cross-sections of the low-head dams.
 """
 import numpy as np
-from scipy.optimize import fsolve, root_scalar
+from scipy.optimize import root_scalar
 
 # global vars
 g = 9.81 # m/s**2
 C_W = 0.62
+
+
+def solve_yc(Q, xs1, xs2, dist):
+    """
+        Finds the critical depth (yc) where the Froude number is exactly 1.0.
+        This is the physical boundary between supercritical and subcritical flow.
+        """
+
+    def fr_residual(y):
+        # We want Froude - 1 = 0
+        return calc_froude_custom(Q, y, xs1, xs2, dist) - 1.0
+
+    try:
+        # Critical depth for most rivers is between 1cm and 10m.
+        # brentq is extremely reliable if the signs at the bounds differ.
+        sol = root_scalar(fr_residual, bracket=(0.01, 10.0), method='brentq')
+        return sol.root
+    except ValueError:
+        # Fallback if the range is weird
+        return 0.5
 
 
 def _get_active_profile(water_depth, xs_profile, dist, direction=1):
@@ -106,11 +126,7 @@ def get_geometry_props(water_depth, xs1, xs2, dist):
     depths = water_depth - y_combined
     depths[depths < 0] = 0
 
-    # FIX: Check for numpy 2.0 'trapezoid', otherwise use legacy 'trapz'
-    if hasattr(np, 'trapezoid'):
-        Area = np.trapezoid(depths, x_combined)
-    else:
-        Area = np.trapz(depths, x_combined)
+    Area = np.trapezoid(depths, x_combined)
 
     if Area <= 0:
         return 0.0001, 0.0001
@@ -118,10 +134,7 @@ def get_geometry_props(water_depth, xs1, xs2, dist):
     # 4. Calculate Centroid
     integrand = 0.5 * depths ** 2
 
-    if hasattr(np, 'trapezoid'):
-        Moment_surface = np.trapezoid(integrand, x_combined)
-    else:
-        Moment_surface = np.trapz(integrand, x_combined)
+    Moment_surface = np.trapezoid(integrand, x_combined)
 
     y_cent = Moment_surface / Area
 
@@ -148,64 +161,46 @@ def calc_froude_custom(Q, y, xs1, xs2, dist):
 def solve_y1_downstream(Q, L, P, xs1, xs2, dist):
     """
     Robustly solves for the supercritical toe depth (y1) using Specific Energy.
-    Scans from the bottom up to ensure we don't accidentally find the subcritical root.
+    Uses critical depth as a physical boundary for the root search.
     """
     # 1. Calculate Available Total Energy (Bernoulli)
-    # H = Head over weir
     H = weir_H(Q, L)
-
-    # Velocity head upstream (V_o)
-    # Approximation: Area upstream ~ L * (P + H)
-    # If the dam is high, V_o is small, but we include it for accuracy.
-    A_dam = L * (P + H)
-    V_o = Q / A_dam
+    A_o = L * H
+    V_o = Q / A_o
     E_total = P + H + (V_o ** 2) / (2 * g)
 
     # 2. Define Residual Function (E_calc - E_total)
-    # We want this to be 0.
     def energy_residual(y):
         if y <= 0: return 1e9
         A, _ = get_geometry_props(y, xs1, xs2, dist)
         if A <= 0: return 1e9
 
-        # Specific Energy at this depth: Depth + Velocity Head
         V = Q / A
         E_calc = y + (V ** 2) / (2 * g)
-
         return E_calc - E_total
 
-    # 3. Scan for Bracket (The "Supercritical Scanner")
-    # We know y1 is small. We start at 1mm and scan up.
-    # At y ~ 0, Energy is +Inf (Residual > 0)
-    # We look for the first depth where Energy < E_total (Residual < 0)
+    # 3. Establish the Search Bracket
+    # Critical depth (yc) is the depth of minimum energy.
+    # Supercritical flow (y1) MUST occur at a depth less than yc.
+    y_c = solve_yc(Q, xs1, xs2, dist)
 
-    low_bound = 0.001
-    high_bound = 0.001
-    found_bracket = False
+    # We use a small epsilon (0.0001) instead of 0 to avoid division by zero.
+    low_bound = 0.0001
+    high_bound = y_c
 
-    # Scan upwards geometrically (1mm, 2mm, 4mm, 8mm...)
-    # We stop if we exceed the Dam Height (P) because y1 can't be that high.
-    for i in range(20):
-        if energy_residual(high_bound) < 0:
-            found_bracket = True
-            break
-        high_bound *= 1.5  # Increase step size
-        if high_bound > P:
-            break
-
-    # 4. Solve
-    if found_bracket:
+    # 4. Verify signs and Solve
+    # At very small depths, Velocity Head is massive, so E_calc > E_total (Residual is Positive).
+    # At critical depth, Energy is at its minimum, so E_calc < E_total (Residual is Negative).
+    if energy_residual(low_bound) > 0 > energy_residual(high_bound):
         try:
-            # We guaranteed the root is between low_bound and high_bound
-            sol = root_scalar(energy_residual, bracket=[low_bound, high_bound], method='brentq')
+            sol = root_scalar(energy_residual, bracket=(low_bound, high_bound), method='brentq')
             return sol.root
         except ValueError:
-            return 0.1  # Fallback
+            return 0.1  # Fallback for convergence issues
     else:
-        # If we scanned all the way up to the dam height and Energy was ALWAYS too high,
-        # it means the flow is "choked" or the dam is drowned out.
-        # We return Critical Depth or just a failed flag.
-        return 0.1
+        # If the residual at y_c is still positive, E_total is less than the
+        # minimum energy required to pass the flow. This indicates "choked" flow.
+        return y_c
 
 
 def solve_y2_jump(Q, y1, xs1, xs2, dist):
@@ -244,7 +239,7 @@ def solve_y2_jump(Q, y1, xs1, xs2, dist):
             return 0.0
 
         # 3. Use Brent's Method
-        sol = root_scalar(momentum_residual, bracket=[lower_bound, upper_bound], method='brentq')
+        sol = root_scalar(momentum_residual, bracket=(lower_bound, upper_bound), method='brentq')
         return sol.root
 
     except ValueError:

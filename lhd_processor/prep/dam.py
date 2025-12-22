@@ -1,6 +1,5 @@
 import re  # Added for date extraction
 import os
-import glob
 import pandas as pd
 from .hydroinformatics import StreamReach
 from .download_dem import download_dem
