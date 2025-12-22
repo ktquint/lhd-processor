@@ -99,7 +99,7 @@ def setup_prep_tab(parent_tab):
         return var
 
     dd_var = add_combo(0, "DEM Resolution:", ("1 m", "1/9 arc-second (~3 m)", "1/3 arc-second (~10 m)"), "1 m")
-    flowline_var = add_combo(1, "Flowline Source:", ("NHDPlus", "GEOGLOWS"), "NHDPlus")
+    flowline_var = add_combo(1, "Flowline Source:", ("NHDPlus", "TDX-Hydro"), "NHDPlus")
     streamflow_var = add_combo(2, "Streamflow Source:", ("National Water Model", "GEOGLOWS"), "National Water Model")
     baseflow_var = add_combo(3, "Baseflow Estimation:",
                              ("WSE and LiDAR Date", "WSE and Median Daily Flow", "2-yr Flow and Bank Estimation"),
@@ -325,7 +325,7 @@ def threaded_prepare_data():
                 utils.set_status("Error loading NWM dataset.")
                 print(e)
 
-        if 'GEOGLOWS' in [streamflow_source, flowline_source]:
+        if 'GEOGLOWS' in streamflow_source or 'TDX-Hydro' in flowline_source:
             if not os.path.exists(tdx_vpu_map):
                 utils.set_status("Downloading VPU Map...")
                 try:

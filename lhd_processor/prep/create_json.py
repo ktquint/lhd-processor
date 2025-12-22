@@ -19,7 +19,7 @@ def rathcelon_input(db_path, json_output_path, baseflow_method, nwm_parquet, flo
     # Map full names to short codes
     fl_map = {
         "NHDPlus": "NHD",
-        "GEOGLOWS": "TDX"  # GEOGLOWS Flowlines are commonly TDX-Hydro
+        "TDX-Hydro": "TDX"
     }
     sf_map = {
         "National Water Model": "NWM",
@@ -89,13 +89,13 @@ def rathcelon_input(db_path, json_output_path, baseflow_method, nwm_parquet, flo
         if sf_source == "GEOGLOWS" and fl_source == "NHDPlus":
             streamflow_source_path = str(site['flowline_path'])
 
-        elif sf_source == "GEOGLOWS" and fl_source == "GEOGLOWS":
+        elif sf_source == "GEOGLOWS" and fl_source == "TDX-Hydro":
             streamflow_source_path = None
 
         elif sf_source == 'National Water Model' and fl_source == 'NHDPlus':
             streamflow_source_path = str(nwm_parquet)
 
-        elif sf_source == 'National Water Model' and fl_source == 'GEOGLOWS':
+        elif sf_source == 'National Water Model' and fl_source == 'TDX-Hydro':
             streamflow_source_path = str(nwm_parquet)
 
         else:

@@ -111,7 +111,6 @@ def download_nhdplus(latitude: float, longitude: float, flowline_dir: str) -> st
         # Sort by date (Newest First)
         items.sort(key=lambda x: x.get('publicationDate', ''), reverse=True)
 
-        # --- NEW: Loop through items until one works ---
         final_gpkg_loc = None
 
         for item in items:

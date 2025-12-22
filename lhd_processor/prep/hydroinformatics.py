@@ -299,6 +299,7 @@ class StreamReachGEOGLOWS:
             print(f"Dam {self.id}: Path to GEOGLOWS streams not provided. Cannot find linkno.")
             return
 
+        print(f"DEBUG: Dam {self.id} is opening GPKG for LINKNO search: {self.geoglows_streams_path}")
         # === 1. Get the target file's CRS ===
         try:
             with fiona.open(self.geoglows_streams_path) as src:

@@ -32,7 +32,7 @@ class Dam:
         # Load incidents for processing
         self.incidents_df = self.db.get_site_incidents(self.site_id)
 
-        # Get settings (may be None initially)
+        # Get settings (maybe None initially)
         self.output_dir = self.site_data.get('output_dir')
         self.hydrology = self.site_data.get('streamflow_source')
         self.hydrography = self.site_data.get('flowline_source')
@@ -46,19 +46,26 @@ class Dam:
         self.flowline_NHD = None
         self.flowline_TDX = self.site_data.get('flowline_path')
 
-    def assign_flowlines(self, flowline_dir, VPU_gpkg):
-        print(f"Dam {self.site_id}: Assigning flowlines ({self.hydrography})...")
-        path = None
+    def assign_flowlines(self, flowline_dir, vpu_gpkg) -> None:
+        print(f"Dam {self.site_id}: Assigning flowlines...")
 
+        # 1. Handle NHDPlus (Primary Spatial Source)
         if self.hydrography == 'NHDPlus':
-            path = download_nhdplus(self.latitude, self.longitude, flowline_dir)
-            self.flowline_NHD = path
-        elif 'GEOGLOWS' in [self.hydrography, self.hydrology]:
-            path = download_tdx_hydro(self.latitude, self.longitude, flowline_dir, VPU_gpkg)
-            self.flowline_TDX = path
+            path_nhd = download_nhdplus(self.latitude, self.longitude, flowline_dir)
+            if path_nhd:
+                self.flowline_NHD = path_nhd
+                self.site_data['flowline_path_nhd'] = path_nhd  # Specific key for NHD
+                # We still set 'flowline_path' as a default for the UI/Database
+                self.site_data['flowline_path'] = path_nhd
+        print("I'm at least making it past the first if statement")
+        # 2. Handle GEOGLOWS (Hydrology or Hydrography Source)
+        if self.hydrology == 'GEOGLOWS' or self.hydrography == 'TDX-Hydro':
+            path_tdx = download_tdx_hydro(self.latitude, self.longitude, flowline_dir, vpu_gpkg)
+            if path_tdx:
+                self.flowline_TDX = path_tdx
+                self.site_data['flowline_path_tdx'] = path_tdx  # Specific key for TDX
+                self.site_data['flowline_path'] = path_tdx
 
-        if path:
-            self.site_data['flowline_path'] = path
 
     def assign_dem(self, dem_dir, resolution):
         print(f"Dam {self.site_id}: Checking/Downloading DEM...")
@@ -127,7 +134,7 @@ class Dam:
         print(f'Dam {self.site_id}: Creating Stream Reach object...')
 
         geoglows_flowline_path = None
-        if 'GEOGLOWS' in [self.hydrology, self.hydrography]:
+        if self.hydrology == 'GEOGLOWS' or self.hydrography == 'TDX-Hydro':
             # Always use the specific flowline path we found/downloaded in assign_flowlines
             geoglows_flowline_path = self.site_data.get('flowline_path')
 
@@ -202,10 +209,12 @@ class Dam:
     def set_streamflow_source(self, source):
         self.site_data['streamflow_source'] = source
         self.hydrology = source
+        print(f'flowline source: {source}')
 
     def set_flowline_source(self, source):
         self.site_data['flowline_source'] = source
         self.hydrography = source
+        print(f'flowline source: {source}')
 
     def save_changes(self):
         """Commits changes back to the DataManager."""
