@@ -98,7 +98,7 @@ def setup_prep_tab(parent_tab):
         cb.grid(row=row, column=1, padx=5, pady=5, sticky=tk.EW)
         return var
 
-    dd_var = add_combo(0, "DEM Resolution:", ("1 m", "1/9 arc-second (~3 m)", "1/3 arc-second (~10 m)"), "1 m")
+    dd_var = add_combo(0, "DEM Resolution (m):", ("1", "10"), "1")
     flowline_var = add_combo(1, "Flowline Source:", ("NHDPlus", "TDX-Hydro"), "NHDPlus")
     streamflow_var = add_combo(2, "Streamflow Source:", ("National Water Model", "GEOGLOWS"), "National Water Model")
     baseflow_var = add_combo(3, "Baseflow Estimation:",
@@ -349,9 +349,9 @@ def threaded_prepare_data():
                 dam.set_output_dir(results_folder)
                 dam.assign_flowlines(strm_folder, tdx_vpu_map)
                 dam.assign_dem(dem_folder, dem_resolution)
-                dam.assign_land(dem_folder, land_folder)
+                dam.assign_land(land_folder)
 
-                if not any([dam.dem_1m, dam.dem_3m, dam.dem_10m]):
+                if not any([dam.dem_path]):
                     print(f"Skipping Dam {site_id}: No DEM.")
                     continue
 

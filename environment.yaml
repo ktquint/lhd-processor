@@ -32,9 +32,15 @@ dependencies:
   # External Packages (installed via pip from GitHub)
   - pip:
     - geoglows
+    - teehr
     - pyarrow
     - matplotlib_scalebar
     - hsclient
     - lazrs
     - git+https://github.com/jlgutenson/rathcelon.git
     - git+https://github.com/MikeFHS/automated-rating-curve.git
+
+  - pynhd
+  - py3dep
+  - hydrosignatures
+  - pygeohydro

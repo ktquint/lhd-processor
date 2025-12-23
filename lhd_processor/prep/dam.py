@@ -1,17 +1,23 @@
-import re  # Added for date extraction
 import os
+import re
+import json
+import datetime
 import pandas as pd
+import geopandas as gpd
 from .hydroinformatics import StreamReach
-from .download_dem import download_dem
-from .download_landuse import download_land_raster
-from .dem_baseflow import est_dem_baseflow
-from .download_flowline import download_nhdplus, download_tdx_hydro
+from .download_geospatial_data import (
+    download_dem,
+    download_nhd_flowline,
+    download_tdx_flowline,
+    download_land_raster,
+    est_dem_baseflow
+)
 
 
 class Dam:
     """
-        Represents a low-head dam during the data preparation phase.
-        Reads/Writes to the DatabaseManager.
+    Represents a low-head dam during the data preparation phase.
+    Handles geospatial data assignment and metadata management.
     """
 
     def __init__(self, site_id, db_manager):
@@ -32,194 +38,153 @@ class Dam:
         # Load incidents for processing
         self.incidents_df = self.db.get_site_incidents(self.site_id)
 
-        # Get settings (maybe None initially)
+        # Settings and Paths
         self.output_dir = self.site_data.get('output_dir')
-        self.hydrology = self.site_data.get('streamflow_source')
-        self.hydrography = self.site_data.get('flowline_source')
+        self.streamflow_source = self.site_data.get('streamflow_source')
+        self.flowline_source = self.site_data.get('flowline_source')
 
-        # Placeholders
+        # Data Placeholders
+        self.flowline_gdf = None
         self.dam_reach = None
-        self.dem_1m = self.site_data.get('dem_1m')
-        self.dem_3m = self.site_data.get('dem_3m')
-        self.dem_10m = self.site_data.get('dem_10m')
-        self.land_cover = self.site_data.get('land_cover')
-        self.flowline_NHD = None
-        self.flowline_TDX = self.site_data.get('flowline_path')
+        self.dem_path = self.site_data.get('dem_path')
+        self.res_meters = self.site_data.get('dem_resolution_m')
+        self.lidar_year = self.site_data.get('lidar_year')
+        self.land_cover_path = self.site_data.get('land_path')
+        self.nhd_gdf = None
+        self.tdx_gdf = None
+
+    @classmethod
+    def from_json(cls, json_path, db_manager):
+        """Re-initialize a Dam object from a saved metadata JSON."""
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        return cls(site_id=data['site_id'], db_manager=db_manager)
 
     def assign_flowlines(self, flowline_dir, vpu_gpkg) -> None:
-        print(f"Dam {self.site_id}: Assigning flowlines...")
-
-        # 1. Handle NHDPlus (Primary Spatial Source)
-        if self.hydrography == 'NHDPlus':
-            path_nhd = download_nhdplus(self.latitude, self.longitude, flowline_dir)
+        print(f"Dam {self.site_id}: Assigning necessary flowlines...")
+        if self.flowline_source == 'NHDPlus':
+            # 1. Fetch NHD
+            path_nhd, gdf_nhd = download_nhd_flowline(self.latitude, self.longitude, flowline_dir)
             if path_nhd:
-                self.flowline_NHD = path_nhd
-                self.site_data['flowline_path_nhd'] = path_nhd  # Specific key for NHD
-                # We still set 'flowline_path' as a default for the UI/Database
-                self.site_data['flowline_path'] = path_nhd
-        print("I'm at least making it past the first if statement")
-        # 2. Handle GEOGLOWS (Hydrology or Hydrography Source)
-        if self.hydrology == 'GEOGLOWS' or self.hydrography == 'TDX-Hydro':
-            path_tdx = download_tdx_hydro(self.latitude, self.longitude, flowline_dir, vpu_gpkg)
+                self.site_data['flowline_path_nhd'] = path_nhd
+                self.nhd_gdf = gdf_nhd
+
+        if self.flowline_source == 'TDX-Hydro' or self.flowline_source == 'GEOGLOWS':
+            # 2. Fetch TDX
+            path_tdx, gdf_tdx = download_tdx_flowline(self.latitude, self.longitude, flowline_dir, vpu_gpkg)
             if path_tdx:
-                self.flowline_TDX = path_tdx
-                self.site_data['flowline_path_tdx'] = path_tdx  # Specific key for TDX
-                self.site_data['flowline_path'] = path_tdx
+                self.site_data['flowline_path_tdx'] = path_tdx
+                self.tdx_gdf = gdf_tdx
 
 
     def assign_dem(self, dem_dir, resolution):
-        print(f"Dam {self.site_id}: Checking/Downloading DEM...")
-        subdir, titles, res = download_dem(
-            self.site_id, self.latitude, self.longitude, self.weir_length, dem_dir, resolution
-        )
+        """
+        Downloads 3DEP DEM using flowline extent.
+        Consolidates to a single dem_path and extracts lidar project year.
+        """
+        if self.flowline_gdf is None:
+            print(f"  - Error: No flowlines assigned for Dam {self.site_id}. Skipping DEM.")
+            return
 
-        if subdir:
-            # --- Logic to extract LiDAR Date ---
-            # Search for a 4-digit year starting with 19 or 20 (e.g. 1999, 2015)
-            # Titles is sometimes a list or string, handle both
-            title_str = str(titles)
-            date_match = re.search(r'(19|20)\d{2}', title_str)
+        print(f"Dam {self.site_id}: Downloading DEM...")
+        path, res, project_name = download_dem(self.site_id, self.flowline_gdf, dem_dir, resolution)
 
-            if date_match:
-                extracted_date = date_match.group(0)
-                print(f"  - Found LiDAR Date: {extracted_date}")
-                self.site_data['lidar_date'] = extracted_date
-            else:
-                self.site_data['lidar_date'] = "Unknown"
+        if path:
+            self.dem_path = path
+            self.res_meters = res
+            self.site_data['dem_path'] = path
+            self.site_data['dem_resolution_m'] = res
+            self.site_data['lidar_project'] = project_name
+            self.site_data['dem_source_info'] = "USGS 3DEP via HyRiver"
 
-            # Save full title string for metadata
-            self.site_data['dem_source_info'] = title_str
-            self.site_data['dem_dir'] = subdir
+            # Extract year from project name (e.g., 'FY19' or '2022')
+            year_match = re.search(r'(20\d{2}|FY\d{2})', project_name)
+            if year_match:
+                year_val = year_match.group(0)
+                # Convert FY22 to 2022
+                self.lidar_year = f"20{year_val[-2:]}" if "FY" in year_val else year_val
+                self.site_data['lidar_year'] = self.lidar_year
 
-            # Map resolution to specific columns
-            if res is not None:
-                if res <= 1.5:
-                    self.site_data['dem_1m'] = subdir
-                    self.dem_1m = subdir
-                elif res <= 5.0:
-                    self.site_data['dem_3m'] = subdir
-                    self.dem_3m = subdir
-                else:
-                    self.site_data['dem_10m'] = subdir
-                    self.dem_10m = subdir
-                self.site_data['final_resolution'] = f"~{res:.2f}m"
-            else:
-                # Fallback based on request string
-                if "1 meter" in resolution:
-                    self.dem_1m = subdir
-                elif "1/9" in resolution:
-                    self.dem_3m = subdir
-                else:
-                    self.dem_10m = subdir
+    def assign_land(self, land_dir):
+        """Clips ESA WorldCover to match the current DEM grid."""
+        if not self.dem_path or not os.path.exists(self.dem_path):
+            print(f"  - Error: No DEM for Dam {self.site_id}. Skipping Land Cover.")
+            return
 
-    def assign_land(self, dem_dir_parent, land_dir):
-        print(f"Dam {self.site_id}: Assigning Land Use Data...")
-
-        # Construct the expected path to the final merged DEM file.
-        dem_name = f"{self.site_id}_MERGED_DEM.tif"
-
-        # The final merged DEM is expected to be in a subdirectory named after the site_id
-        # located inside the main DEM directory (dem_dir_parent).
-        dam_dem_subdir = os.path.join(dem_dir_parent, str(self.site_id))
-        dem_path = os.path.join(dam_dem_subdir, dem_name)
-
-        if not os.path.exists(dem_path):
-            raise FileNotFoundError(f"Merged DEM file not found at expected path: {dem_path}")
-
-        land_raster = download_land_raster(self.site_id, dem_path, land_dir)
+        print(f"Dam {self.site_id}: Aligning Land Use to {self.res_meters}m DEM...")
+        land_raster = download_land_raster(self.site_id, str(self.dem_path), land_dir)
+        self.land_cover_path = land_raster
         self.site_data['land_path'] = land_raster
-        return land_raster
 
-    def create_reach(self, nwm_ds=None, tdx_vpu_map=None):
-        print(f'Dam {self.site_id}: Creating Stream Reach object...')
+    def create_reach(self, nwm_ds=None):
+        """Initializes the StreamReach object for hydraulic analysis."""
+        print(f"Dam {self.site_id}: Creating Stream Reach object...")
 
-        geoglows_flowline_path = None
-        if self.hydrology == 'GEOGLOWS' or self.hydrography == 'TDX-Hydro':
-            # Always use the specific flowline path we found/downloaded in assign_flowlines
-            geoglows_flowline_path = self.site_data.get('flowline_path')
+        flowline_path = self.site_data.get('flowline_path')
 
         self.dam_reach = StreamReach(
             lhd_id=self.site_id,
             latitude=self.latitude,
             longitude=self.longitude,
-            data_sources=[self.hydrology],
-            geoglows_streams=geoglows_flowline_path,
+            data_sources=[self.streamflow_source],
+            geoglows_streams=flowline_path if self.flowline_source == 'TDX-Hydro' else None,
             nwm_ds=nwm_ds,
             streamflow=True
         )
 
     def set_dem_baseflow(self, baseflow_method):
-        """Calculates baseflow and stores it in the 'Sites' dictionary."""
-        current_val = self.site_data.get('dem_baseflow')
+        print(f"Dam {self.site_id}: Calculating baseflow...")
 
-        # We generally want to run this if baseflow is missing OR if we want to capture the lidar date
-        # If you want to force it to run even if baseflow exists (to get the date), remove the 'if pd.isna' check.
-        # For now, I will keep the check, but you can remove it if needed.
-        if pd.isna(current_val) or (
-                baseflow_method == "WSE and LiDAR Date" and pd.isna(self.site_data.get('lidar_date'))):
-
-            print(f"Dam {self.site_id}: Estimating baseflow via '{baseflow_method}'...")
+        # Estimate for NWM (National Water Model)
+        if self.streamflow_source == 'National Water Model':
             try:
-                # Unpack the tuple (baseflow, date)
-                baseflow, lidar_date = est_dem_baseflow(self.dam_reach, self.hydrology, baseflow_method)
-
-                self.site_data['dem_baseflow'] = baseflow
-                self.site_data['baseflow_method'] = baseflow_method
-
-                # If we found a date from the LiDAR data, save it!
-                if lidar_date:
-                    print(f"  - Saving LiDAR Date to database: {lidar_date}")
-                    self.site_data['lidar_date'] = lidar_date
-                elif baseflow_method == "WSE and LiDAR Date":
-                    self.site_data['lidar_date'] = None
-
+                val_nwm, lidar_date = est_dem_baseflow(self.dam_reach, "National Water Model", baseflow_method)
+                self.site_data['baseflow_nwm'] = val_nwm
+                if lidar_date: self.site_data['lidar_date'] = lidar_date
             except Exception as e:
-                print(f"Error estimating baseflow: {e}")
-        else:
-            print(f"Dam {self.site_id}: Baseflow already set ({current_val}).")
+                print(f"  - NWM Baseflow Error: {e}")
+
+        if self.streamflow_source == 'GEOGLOWS':
+            # Estimate for GEOGLOWS
+            try:
+                val_geo, _ = est_dem_baseflow(self.dam_reach, "GEOGLOWS", baseflow_method)
+                self.site_data['baseflow_geo'] = val_geo
+            except Exception as e:
+                print(f"  - GEOGLOWS Baseflow Error: {e}")
+
+        self.site_data['baseflow_method'] = baseflow_method
 
 
-    def set_fatal_flows(self):
-        """Updates the incidents DataFrame with flow values."""
-        if self.incidents_df.empty:
-            print(f"Dam {self.site_id}: No incidents found to process.")
-            return
+    def to_json(self, output_dir=None):
+        """Exports dam metadata and processing state to a JSON file."""
+        if output_dir is None:
+            output_dir = os.path.join(self.output_dir if self.output_dir else "output", str(self.site_id))
 
-        if 'source' in self.incidents_df.columns:
-            self.incidents_df['source'] = self.incidents_df['source'].astype(object)
+        os.makedirs(output_dir, exist_ok=True)
+        self.site_data['last_updated'] = datetime.datetime.now().isoformat()
 
-        print(f"Dam {self.site_id}: Retrieving flows for {len(self.incidents_df)} incidents...")
+        # Clean dictionary for JSON serialization
+        export_dict = {}
+        for k, v in self.site_data.items():
+            if isinstance(v, (pd.DataFrame, gpd.GeoDataFrame)):
+                export_dict[k] = f"Table ({len(v)} rows)"
+            elif hasattr(v, 'wkt'):  # Handle Shapely geometries
+                export_dict[k] = v.wkt
+            else:
+                export_dict[k] = v
 
-        for index, row in self.incidents_df.iterrows():
-            date = row['date']
-            # Only fetch if flow is missing
-            if pd.isna(row.get('flow')):
-                try:
-                    flow = self.dam_reach.get_flow_on_date(date, self.hydrology)
-                    if isinstance(flow, (int, float)) and not pd.isna(flow):
-                        self.incidents_df.at[index, 'flow'] = flow
-                        # This line below was causing the warning:
-                        self.incidents_df.at[index, 'source'] = self.hydrology
-                except Exception as e:
-                    print(f"  - Error retrieving flow for {date}: {e}")
+        json_path = os.path.join(output_dir, f"LHD_{self.site_id}_metadata.json")
+        with open(json_path, 'w') as f:
+            json.dump(export_dict, f, indent=4)
 
-    def set_output_dir(self, output_dir):
-        self.site_data['output_dir'] = output_dir
-
-    def set_streamflow_source(self, source):
-        self.site_data['streamflow_source'] = source
-        self.hydrology = source
-        print(f'flowline source: {source}')
-
-    def set_flowline_source(self, source):
-        self.site_data['flowline_source'] = source
-        self.hydrography = source
-        print(f'flowline source: {source}')
+        print(f"Dam {self.site_id}: Metadata exported to {json_path}")
+        return json_path
 
     def save_changes(self):
-        """Commits changes back to the DataManager."""
+        """Syncs the in-memory state back to the central database/manager."""
         self.db.update_site_data(self.site_id, self.site_data)
-        self.db.update_site_incidents(self.site_id, self.incidents_df)
+        if not self.incidents_df.empty:
+            self.db.update_site_incidents(self.site_id, self.incidents_df)
 
     def __repr__(self):
-        return f"<Dam ID={self.site_id} Name='{self.name}'>"
+        return f"<Dam ID={self.site_id} Name='{self.name}' Res={self.res_meters}m>"

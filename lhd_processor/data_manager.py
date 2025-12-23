@@ -15,12 +15,15 @@ class DatabaseManager:
         # --- Schemas ---
         self.sites_schema = [
             'site_id', 'name', 'latitude', 'longitude', 'weir_length', 'comments',
-            'dem_dir', 'flowline_path', 'streamflow_source', 'flowline_source',
-            'dem_baseflow', 'P_known', 'output_dir', 'final_resolution',
-            'baseflow_method', 'lidar_date', 'dem_source_info', 'land_path'
+            'dem_path', 'dem_resolution_m', 'lidar_project',
+            'flowline_path_nhd', 'flowline_path_tdx',
+            'baseflow_nwm', 'baseflow_geo',
+            'P_known', 'output_dir',
+            'baseflow_method', 'lidar_date', 'dem_source_info',
+            'land_esa'
         ]
 
-        self.incidents_schema = ['site_id', 'date', 'flow', 'source']
+        self.incidents_schema = ['site_id', 'date', 'flow_nwm', 'flow_geo']
 
         self.xsections_schema = [
             'site_id', 'xs_index', 'slope', 'P_height',
@@ -109,12 +112,17 @@ class DatabaseManager:
     # --- Updaters ---
     def update_site_data(self, site_id, data_dict):
         site_id = int(site_id)
+
+        # Only keep data that belongs in the Excel schema
+        # This keeps your Excel file tidy and prevents "Table with X records" text from being saved
+        filtered_dict = {k: v for k, v in data_dict.items() if k in self.sites_schema}
+
         if site_id not in self.sites['site_id'].values:
-            data_dict['site_id'] = site_id
-            self.sites = pd.concat([self.sites, pd.DataFrame([data_dict])], ignore_index=True)
+            filtered_dict['site_id'] = site_id
+            self.sites = pd.concat([self.sites, pd.DataFrame([filtered_dict])], ignore_index=True)
         else:
             idx = self.sites[self.sites['site_id'] == site_id].index[0]
-            for key, val in data_dict.items():
+            for key, val in filtered_dict.items():
                 self.sites.at[idx, key] = val
 
     def update_site_incidents(self, site_id, updates_df):

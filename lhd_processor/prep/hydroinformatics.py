@@ -4,6 +4,8 @@ import geoglows
 import numpy as np
 import pandas as pd
 import geopandas as gpd
+from pygeohydro import NWIS
+import hydrosignatures as hs
 import matplotlib.pyplot as plt
 from shapely.geometry import Point
 from typing import List, Optional, Any
@@ -86,6 +88,16 @@ class StreamReachBase:
         print("Warning: linkno property not overridden by mixin.")
         return None
     # --- END STUB PROPERTIES ---
+
+    def find_nearest_usgs_site(self):
+        """Finds the nearest USGS gauge and its metadata."""
+        nwis = NWIS()
+        # Search for gauges within a 5km radius
+        sites = nwis.get_info({"location": f"{self.longitude}, {self.latitude}", "dist": 5})
+        if not sites.empty:
+            self._site_no = sites.site_no.iloc[0]
+            return self._site_no
+        return None
 
     def _get_source_df(self, source) -> Optional[pd.DataFrame]:
         """Helper to get the correct DataFrame based on the source string."""
@@ -242,15 +254,16 @@ class StreamReachBase:
         plt.show()
 
     def export_fdcs(self) -> dict:
-        """Exports FDC data for each source to a dictionary."""
+        """Uses HydroSignatures to calculate FDCs."""
         fdc_results = {}
         for source in self.data_sources:
             df = self._get_source_df(source)
             if df is not None and not df.empty:
-                flow_data = df['flow_cms'].dropna()
-                exceedance, sorted_flows = _calculate_fdc(flow_data)
-                fdc_results[source] = (exceedance.tolist(), sorted_flows.tolist())
+                # HydroSignatures returns a clean FDC DataFrame
+                fdc_df = hs.compute_fdc(df["flow_cms"])
+                fdc_results[source] = fdc_df.to_dict()
         return fdc_results
+
 
     def __repr__(self):
         # Accessing _geoglows_df directly to avoid property call in repr
