@@ -11,7 +11,7 @@ from dask.distributed import Client, LocalCluster, as_completed
 # CLEAN IMPORT: Importing directly from the package
 from . import utils
 from ..data_manager import DatabaseManager
-from ..prep import Dam as PrepDam, rathcelon_input
+from ..prep import LowHeadDam as PrepDam, rathcelon_input
 
 # Import Rathcelon carefully
 try:
@@ -358,9 +358,8 @@ def threaded_prepare_data():
                 if streamflow_source == 'National Water Model' and nwm_ds is None:
                     pass
                 else:
-                    dam.create_reach(nwm_ds, tdx_vpu_map)
-                    dam.set_dem_baseflow(baseflow_method)
-                    dam.set_fatal_flows()
+                    dam.est_dem_baseflow(baseflow_method)
+                    dam.est_fatal_flows()
 
                 dam.save_changes()
                 processed_count += 1

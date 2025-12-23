@@ -8,6 +8,7 @@ import rasterio
 import numpy as np
 import pandas as pd
 import laspy.errors
+import pynhd as nhd
 from pynhd import NLDI
 import geopandas as gpd
 from pyproj import Transformer
@@ -27,7 +28,8 @@ except ImportError:
 
 def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km=2):
     """
-    Uses HyRiver NLDI to fetch NHDPlus flowlines and standardizes ID columns.
+    Uses HyRiver NLDI to fetch NHDPlus flowlines, merges VAAs (hydroseq, dnhydroseq),
+    and standardizes ID columns.
     """
     nldi = NLDI()
     comid_df = nldi.comid_byloc((lon, lat))
@@ -56,12 +58,25 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
     combined_df = pd.concat(all_reaches)
     combined_df.columns = combined_df.columns.str.lower()
 
-    # Standardization: Ensure 'nhdplusid' exists for downstream logic
+    # Standardization: Ensure 'nhdplusid' exists
     id_map = ['nhdplus_comid', 'comid', 'nhdplusid']
     for col in id_map:
         if col in combined_df.columns:
             combined_df = combined_df.rename(columns={col: 'nhdplusid'})
             break
+
+    # --- FETCH AND MERGE VAAs ---
+    # Convert ID to numeric for the join
+    combined_df['nhdplusid'] = pd.to_numeric(combined_df['nhdplusid'])
+
+    # Fetch the VAA table (hydroseq and dnhydroseq are in the 'vaa' service)
+    # Note: nhdplus_vaa() fetches the national parquet file
+    vaa_df = nhd.nhdplus_vaa()
+    vaa_subset = vaa_df[['comid', 'hydroseq', 'dnhydroseq']].rename(columns={'comid': 'nhdplusid'})
+
+    # Merge VAAs into the flowline dataframe
+    combined_df = combined_df.merge(vaa_subset, on='nhdplusid', how='left')
+    # ----------------------------
 
     combined_gdf = gpd.GeoDataFrame(combined_df, crs=all_reaches[0].crs)
     combined_gdf = combined_gdf.drop_duplicates(subset='nhdplusid')
