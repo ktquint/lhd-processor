@@ -3,9 +3,10 @@ import re
 import json
 import datetime
 import pandas as pd
+import xarray as xr
 import geopandas as gpd
 import geoglows
-from typing import Dict, Any, Optional  # Added for proper type hinting
+from typing import Dict, Any, Optional, List  # Added for proper type hinting
 from .download_geospatial_data import (
     download_dem,
     download_nhd_flowline,
@@ -82,23 +83,18 @@ class LowHeadDam:
         elif source == 'National Water Model' and self.nwm_id:
             try:
                 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                parquet_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.parquet')
-                if os.path.exists(parquet_path):
-                    # Filter by feature_id (COMID)
-                    df = pd.read_parquet(parquet_path, filters=[('feature_id', '==', int(self.nwm_id))])
-
-                    # Your Parquet file uses 'time' as the index/column name from xarray
-                    # Reset index to make 'time' a searchable column if it's currently an index
-                    if 'time' not in df.columns:
-                        df = df.reset_index()
-
-                    # Search using the 'time' column
-                    df['time'] = pd.to_datetime(df['time'])
-                    match = df[df['time'].dt.strftime('%Y-%m-%d') == date]
-
-                    return float(match['streamflow'].iloc[0]) if not match.empty else None
+                zarr_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.zarr')
+                if os.path.exists(zarr_path):
+                    ds = xr.open_zarr(zarr_path, consolidated=True)
+                    try:
+                        # Select feature and time
+                        val = ds['streamflow'].sel(feature_id=int(self.nwm_id), time=date).values
+                        return float(val)
+                    except Exception:
+                        # Fallback if specific date/ID not found
+                        return 0.0
             except Exception as e:
-                print(f"NWM Parquet Error: {e}")
+                print(f"NWM Zarr Error: {e}")
                 return 0.0
         else:
             return 0.0
@@ -113,11 +109,14 @@ class LowHeadDam:
 
         elif source == 'National Water Model' and self.nwm_id:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            parquet_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.parquet')
-            if os.path.exists(parquet_path):
-                # Ensure we filter by feature_id to get only this dam's data
-                df = pd.read_parquet(parquet_path, filters=[('feature_id', '==', int(self.nwm_id))])
-                return float(df['streamflow'].median())
+            zarr_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.zarr')
+            if os.path.exists(zarr_path):
+                try:
+                    ds = xr.open_zarr(zarr_path, consolidated=True)
+                    median_val = ds['streamflow'].sel(feature_id=int(self.nwm_id)).median().values
+                    return float(median_val)
+                except Exception:
+                    return 0.0
             else:
                 return 0.0
         else:
@@ -200,12 +199,15 @@ class LowHeadDam:
                 self.lidar_year = f"20{year_val[-2:]}" if "FY" in year_val else year_val
                 self.site_data['lidar_year'] = self.lidar_year
 
-    def assign_flowlines(self, flowline_dir: str, vpu_gpkg: str):
+    def assign_flowlines(self, flowline_dir: str, vpu_gpkg: str) -> List[int]:
         """
             Downloads both NHD and TDX flowlines if needed to support
             mixed streamflow sources (NWM and GEOGLOWS).
+            Returns a list of all COMIDs/LINKNOs found in the downloaded flowline segments.
         """
         print(f"Dam {self.site_id}: Assigning flowlines for mixed-source support...")
+        
+        found_ids = []
 
         if self.flowline_source == 'NHDPlus' or self.streamflow_source == 'National Water Model':
             path_nhd, gdf = download_nhd_flowline(self.latitude, self.longitude, flowline_dir)
@@ -224,6 +226,10 @@ class LowHeadDam:
                     # Fallback to GDF if naming convention is missing
                     self.nwm_id = int(gdf.iloc[0]['nhdplusid'])
                 self.site_data['reach_id'] = self.nwm_id
+                
+                # Collect all IDs in the reach
+                if 'nhdplusid' in gdf.columns:
+                    found_ids.extend(gdf['nhdplusid'].astype(int).tolist())
 
         if self.flowline_source == 'TDX-Hydro' or self.streamflow_source == 'GEOGLOWS':
             path_tdx, gdf = download_tdx_flowline(self.latitude, self.longitude, flowline_dir, vpu_gpkg)
@@ -243,6 +249,12 @@ class LowHeadDam:
                     self.geoglows_id = int(gdf.iloc[0]['LINKNO'])
 
                 self.site_data['linkno'] = self.geoglows_id
+                
+                # Collect all IDs in the reach
+                if 'LINKNO' in gdf.columns:
+                    found_ids.extend(gdf['LINKNO'].astype(int).tolist())
+        
+        return list(set(found_ids))
 
 
     def assign_land(self, land_dir: str):

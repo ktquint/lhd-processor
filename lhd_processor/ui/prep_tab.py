@@ -2,16 +2,15 @@ import gc
 import os
 import json
 import threading
-import pandas as pd
 import tkinter as tk
-from hsclient import HydroShare
 from tkinter import ttk, filedialog, messagebox
-from dask.distributed import Client, LocalCluster, as_completed
+from dask.distributed import Client, LocalCluster, as_completed as dask_as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # CLEAN IMPORT: Importing directly from the package
 from . import utils
 from ..data_manager import DatabaseManager
-from ..prep import LowHeadDam as PrepDam, rathcelon_input
+from ..prep import LowHeadDam as PrepDam, rathcelon_input, create_reanalysis_file, condense_zarr
 
 # Import Rathcelon carefully
 try:
@@ -270,6 +269,37 @@ def process_single_dam_rathcelon(dam_dict):
         return False, dam_name, str(e)
 
 
+# --- Worker Functions for ThreadPoolExecutor ---
+
+def worker_assign_flowlines(sid, db, flowline_source, streamflow_source, strm_folder, tdx_vpu_map):
+    dam = PrepDam(sid, db)
+    dam.set_flowline_source(flowline_source)
+    dam.set_streamflow_source(streamflow_source)
+    ids = dam.assign_flowlines(strm_folder, tdx_vpu_map)
+    dam.save_changes()
+    return ids
+
+def worker_assign_dem(sid, db, dem_folder, dem_resolution):
+    dam = PrepDam(sid, db)
+    dam.assign_dem(dem_folder, dem_resolution)
+    dam.save_changes()
+
+def worker_assign_hydraulics(sid, db, results_folder, land_folder, baseflow_method):
+    dam = PrepDam(sid, db)
+    dam.set_output_dir(results_folder)
+    dam.assign_land(land_folder)
+    dam.est_dem_baseflow(baseflow_method)
+    
+    lidar_date = None
+    if dam.nwm_id:
+         lidar_date = dam.site_data.get('lidar_date')
+    
+    dam.est_fatal_flows()
+    dam.save_changes()
+    
+    return (int(dam.nwm_id), lidar_date) if dam.nwm_id and lidar_date else None
+
+
 def threaded_prepare_data():
     try:
         xlsx_path = database_entry.get()
@@ -286,7 +316,7 @@ def threaded_prepare_data():
             messagebox.showerror("Error", f"Database file not found:\n{xlsx_path}")
             return
 
-        utils.set_status("Inputs validated. Loading database...")
+        # Ensure all directories exist
         os.makedirs(dem_folder, exist_ok=True)
         os.makedirs(strm_folder, exist_ok=True)
         if land_folder:
@@ -294,101 +324,102 @@ def threaded_prepare_data():
         os.makedirs(results_folder, exist_ok=True)
 
         db = DatabaseManager(xlsx_path)
+        site_ids = db.sites['site_id'].tolist()
+        total_dams = len(site_ids)
 
-        hydroshare_id = "88759266f9c74df8b5bb5f52d142ba8e"
+        # Path to the VPU map required for TDX/GEOGLOWS
         ui_dir = os.path.dirname(os.path.realpath(__file__))
         package_root = os.path.dirname(ui_dir)
-        data_dir = os.path.join(package_root, 'data')
-        os.makedirs(data_dir, exist_ok=True)
+        tdx_vpu_map = os.path.join(package_root, 'data', 'vpu-boundaries.gpkg')
 
-        nwm_parquet = os.path.join(data_dir, 'nwm_v3_daily_retrospective.parquet')
-        vpu_filename = "vpu-boundaries.gpkg"
-        tdx_vpu_map = os.path.join(data_dir, vpu_filename)
-        nwm_ds = None
-
-        if streamflow_source == 'National Water Model':
-            if not os.path.exists(nwm_parquet):
-                utils.set_status("Downloading NWM Parquet...")
+        # --- STAGE 1: BATCH FLOWLINES (Parallel) ---
+        utils.set_status(f"Stage 1/4: Assigning flowlines for {total_dams} sites (Parallel)...")
+        all_comids = set()
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(worker_assign_flowlines, sid, db, flowline_source, streamflow_source, strm_folder, tdx_vpu_map): sid for sid in site_ids}
+            
+            completed_count = 0
+            for future in as_completed(futures):
+                completed_count += 1
+                utils.set_status(f"Flowlines: Processed {completed_count}/{total_dams}")
                 try:
-                    hs = HydroShare()
-                    resource = hs.resource(hydroshare_id)
-                    resource.file_download(path='nwm_v3_daily_retrospective.parquet', save_path=data_dir)
+                    ids = future.result()
+                    if ids:
+                        all_comids.update(ids)
                 except Exception as e:
-                    messagebox.showerror("Download Failed", f"Failed to download NWM file: {e}")
-                    return
+                    print(f"Error in flowline worker: {e}")
 
-            utils.set_status("Loading NWM dataset...")
-            try:
-                nwm_df = pd.read_parquet(nwm_parquet)
-                nwm_ds = nwm_df.to_xarray()
-            except Exception as e:
-                utils.set_status("Error loading NWM dataset.")
-                print(e)
-
-        if 'GEOGLOWS' in streamflow_source or 'TDX-Hydro' in flowline_source:
-            if not os.path.exists(tdx_vpu_map):
-                utils.set_status("Downloading VPU Map...")
-                try:
-                    hs = HydroShare()
-                    resource = hs.resource(hydroshare_id)
-                    resource.file_download(path=vpu_filename, save_path=data_dir)
-                except Exception as e:
-                    messagebox.showerror("Download Failed", f"Failed to download VPU map: {e}")
-                    return
-
-        total_dams = len(db.sites)
-        processed_count = 0
-
-        for i, site_id in enumerate(db.sites['site_id']):
-            try:
-                utils.set_status(f"Prep: Dam {site_id} ({i + 1}/{total_dams})...")
-
-                dam = PrepDam(site_id, db)
-                dam.set_streamflow_source(streamflow_source)
-                dam.set_flowline_source(flowline_source)
-                dam.set_output_dir(results_folder)
-                dam.assign_flowlines(strm_folder, tdx_vpu_map)
-                dam.assign_dem(dem_folder, dem_resolution)
-                dam.assign_land(land_folder)
-
-                if not any([dam.dem_path]):
-                    print(f"Skipping Dam {site_id}: No DEM.")
-                    continue
-
-                if streamflow_source == 'National Water Model' and nwm_ds is None:
-                    pass
-                else:
-                    dam.est_dem_baseflow(baseflow_method)
-                    dam.est_fatal_flows()
-
-                dam.save_changes()
-                processed_count += 1
-
-            except Exception as e:
-                print(f"Error prepping Dam {site_id}: {e}")
-
-        if processed_count > 0:
-            utils.set_status("Saving database...")
-            db.save()
-
-            json_loc = json_entry.get()
-            rathcelon_input(
-                xlsx_path,
-                json_loc,
-                baseflow_method,
-                nwm_parquet,
-                flowline_source,
-                streamflow_source
-            )
-
-            utils.set_status(f"Prep complete. {processed_count} dams processed.")
-            messagebox.showinfo("Success", f"Prep complete. Database updated.")
+        # --- STAGE 2: BATCH STREAMFLOW (Cloud Extraction) ---
+        utils.set_status("Stage 2/4: Running Condense Zarr for all identified IDs...")
+        
+        # Use the internal function instead of external script
+        nwm_zarr = os.path.join(package_root, 'data', 'nwm_v3_daily_retrospective.zarr')
+        if all_comids:
+            condense_zarr(list(all_comids), nwm_zarr)
         else:
-            utils.set_status("No dams processed successfully.")
+            utils.set_status("No COMIDs found to extract streamflow for.")
+
+        # --- STAGE 3: BATCH DEMs (Parallel) ---
+        utils.set_status(f"Stage 3/4: Downloading DEMs for {total_dams} sites (Parallel)...")
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(worker_assign_dem, sid, db, dem_folder, dem_resolution) for sid in site_ids]
+            
+            completed_count = 0
+            for future in as_completed(futures):
+                completed_count += 1
+                utils.set_status(f"DEMs: Processed {completed_count}/{total_dams}")
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"Error in DEM worker: {e}")
+
+        # --- STAGE 4: BATCH LAND USE & HYDRAULICS (Parallel) ---
+        utils.set_status(f"Stage 4/4: Finalizing Land Use and Baseflows (Parallel)...")
+        comid_date_map = {}
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(worker_assign_hydraulics, sid, db, results_folder, land_folder, baseflow_method) for sid in site_ids]
+            
+            completed_count = 0
+            for future in as_completed(futures):
+                completed_count += 1
+                utils.set_status(f"Hydraulics: Processed {completed_count}/{total_dams}")
+                try:
+                    res = future.result()
+                    if res:
+                        comid_date_map[res[0]] = res[1]
+                except Exception as e:
+                    print(f"Error in Hydraulics worker: {e}")
+
+        # --- REANALYSIS ---
+        if all_comids:
+            utils.set_status(f"Generating reanalysis for {len(all_comids)} reaches...")
+            create_reanalysis_file(list(all_comids), results_folder, streamflow_source, package_root, comid_date_map)
+
+        # --- FINALIZATION ---
+        utils.set_status("Saving database and creating RathCelon input file...")
+        db.save()
+
+        json_loc = json_entry.get()
+        # nwm_zarr is already defined above
+
+        rathcelon_input(
+            xlsx_path,
+            json_loc,
+            baseflow_method,
+            nwm_zarr,
+            flowline_source,
+            streamflow_source
+        )
+
+        utils.set_status(f"Prep complete. {total_dams} dams processed across 4 stages.")
+        messagebox.showinfo("Success", f"Batch Prep complete.\nDatabase and JSON file updated.")
 
     except Exception as e:
-        utils.set_status(f"Error: {e}")
-        print(e)
+        utils.set_status(f"Error during batch prep: {e}")
+        print(f"Detailed Error: {e}")
     finally:
         prep_run_button.config(state=tk.NORMAL)
 
@@ -452,7 +483,7 @@ def threaded_run_rathcelon():
                 success_count = 0
                 processed_so_far = 0
 
-                for future in as_completed(futures):
+                for future in as_completed(dask_as_completed(futures)):
                     # --- STOP CHECK ---
                     if stop_event.is_set():
                         client.cancel(futures)  # Attempt to cancel pending tasks
