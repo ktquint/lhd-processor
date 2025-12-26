@@ -1,5 +1,6 @@
 import os
 import shutil
+import json
 import pandas as pd
 import threading
 
@@ -162,3 +163,141 @@ class DatabaseManager:
                 new_res['site_id'] = site_id
                 new_res = self._enforce_schema(new_res, self.results_schema)
                 self.results = pd.concat([self.results, new_res], ignore_index=True)
+
+    def to_json(self, json_output_path, baseflow_method, nwm_parquet, flowline_source, streamflow_source):
+        """
+        Generates the JSON input file for RathCelon, replacing the functionality of create_json.py.
+        """
+        print("Generating RathCelon input files...")
+
+        # --- NAMING LOGIC START ---
+        # Map full names to short codes
+        fl_map = {
+            "NHDPlus": "NHD",
+            "TDX-Hydro": "TDX"
+        }
+        sf_map = {
+            "National Water Model": "NWM",
+            "GEOGLOWS": "GEO"
+        }
+
+        # Get codes, defaulting to the full string if not found
+        fl_code = fl_map.get(flowline_source, flowline_source)
+        sf_code = sf_map.get(streamflow_source, streamflow_source)
+
+        # Construct the dynamic filename
+        bridge_csv_name = f"rathcelon_{fl_code}_{sf_code}.csv"
+        # --- NAMING LOGIC END ---
+
+        # 1. Filter for ready sites
+        # Ensure we have the necessary columns before filtering
+        required_cols = ['dem_path', 'flowline_path_nhd', 'flowline_path_tdx', 'output_dir']
+        for col in required_cols:
+            if col not in self.sites.columns:
+                self.sites[col] = None
+
+        # Determine which flowline path to check based on source
+        flowline_col = 'flowline_path_nhd' if flowline_source == 'NHDPlus' else 'flowline_path_tdx'
+        
+        ready_sites = self.sites.dropna(subset=['dem_path', flowline_col]).copy()
+
+        if ready_sites.empty:
+            print("No sites are ready for processing (missing DEM or Flowline).")
+            return
+
+        # 2. Create the "Bridge" CSV using the new name
+        output_dir = os.path.dirname(json_output_path)
+        bridge_csv_path = os.path.join(output_dir, bridge_csv_name)
+
+        try:
+            ready_sites.to_csv(bridge_csv_path, index=False)
+            print(f"Created bridge CSV: {bridge_csv_path}")
+        except Exception as e:
+            print(f"Failed to create bridge CSV: {e}")
+            return
+
+        dams_list = []
+
+        # 3. Build the Dictionary for each Dam
+        for _, site in ready_sites.iterrows():
+            site_id = site['site_id']
+
+            # Determine output directory
+            dem_dir = os.path.dirname(site['dem_path'])
+            dam_output_dir = site['output_dir']
+            if pd.isna(dam_output_dir):
+                dam_output_dir = os.path.join(output_dir, "Results")
+
+            # --- BASEFLOW & BANKS LOGIC ---
+            # Determine baseflow value based on source
+            baseflow_val = 0.0
+            if streamflow_source == 'National Water Model':
+                baseflow_val = site.get('baseflow_nwm')
+            elif streamflow_source == 'GEOGLOWS':
+                baseflow_val = site.get('baseflow_geo')
+            
+            if pd.isna(baseflow_val):
+                baseflow_val = 0.0
+            else:
+                baseflow_val = float(baseflow_val)
+
+            if baseflow_method in ["WSE and LiDAR Date", "WSE and Median Daily Flow"]:
+                use_banks = False
+            else:
+                use_banks = True
+                baseflow_val = None
+
+            # --- STREAMFLOW SOURCE LOGIC ---
+            streamflow_source_path = None
+
+            # Get the correct flowline path
+            flowline_path = site[flowline_col]
+
+            if streamflow_source == "GEOGLOWS" and flowline_source == "NHDPlus":
+                streamflow_source_path = str(flowline_path)
+
+            elif streamflow_source == "GEOGLOWS" and flowline_source == "TDX-Hydro":
+                streamflow_source_path = None
+
+            elif streamflow_source == 'National Water Model' and flowline_source == 'NHDPlus':
+                streamflow_source_path = str(nwm_parquet)
+
+            elif streamflow_source == 'National Water Model' and flowline_source == 'TDX-Hydro':
+                streamflow_source_path = str(nwm_parquet)
+
+            else:
+                streamflow_source_path = streamflow_source
+
+            # --- DICTIONARY CONSTRUCTION ---
+            dam_dict = {
+                "name": str(site['site_id']),
+                "dam_csv": str(bridge_csv_path),
+                "dam_id_field": "site_id",
+                "dam_id": int(site_id),
+                "flowline": str(flowline_path),
+                "dem_dir": dem_dir,
+                "land_raster": str(site.get('land_raster', '')),
+                "bathy_use_banks": use_banks,
+                "output_dir": str(dam_output_dir),
+                "process_stream_network": True,
+                "find_banks_based_on_landcover": False,
+                "create_reach_average_curve_file": False,
+                "known_baseflow": baseflow_val,
+                "streamflow": streamflow_source_path
+            }
+
+            dams_list.append(dam_dict)
+
+        # 4. Create Final JSON Wrapper
+        json_data = {
+            "dams": dams_list
+        }
+
+        # 5. Save JSON
+        try:
+            with open(json_output_path, 'w') as f:
+                json.dump(json_data, f, indent=4)
+            print(f"Successfully created JSON at: {json_output_path}")
+            print(f"Total Dams Included: {len(dams_list)}")
+        except Exception as e:
+            print(f"Failed to write JSON: {e}")

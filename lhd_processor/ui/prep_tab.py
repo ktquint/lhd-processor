@@ -10,14 +10,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # CLEAN IMPORT: Importing directly from the package
 from . import utils
 from ..data_manager import DatabaseManager
-from ..prep import LowHeadDam as PrepDam, rathcelon_input, create_reanalysis_file, condense_zarr
+from ..prep import LowHeadDam as PrepDam, create_reanalysis_file, condense_zarr
 
 # Import Rathcelon carefully
 try:
-    from rathcelon.classes import Dam as RathcelonDam
+    from ..rathcelon.classes import RathCelonDam
 except Exception as e:
     print(f"Warning: Could not import RathCelon. Error: {e}")
-    RathcelonDam = None
+    RathCelonDam = None
 
 # Module-level widgets
 project_entry = None
@@ -257,7 +257,7 @@ def process_single_dam_rathcelon(dam_dict):
 
     dam_name = dam_dict.get('name', "Unknown Dam")
     try:
-        dam_i = RathcelonDam(**dam_dict)
+        dam_i = RathCelonDam(**dam_dict)
         dam_i.process_dam()
 
         del dam_i
@@ -284,7 +284,7 @@ def worker_assign_dem(sid, db, dem_folder, dem_resolution):
     dam.assign_dem(dem_folder, dem_resolution)
     dam.save_changes()
 
-def worker_assign_hydraulics(sid, db, results_folder, land_folder, baseflow_method):
+def worker_assign_hydraulics(sid, db, results_folder, land_folder, baseflow_method, streamflow_source):
     dam = PrepDam(sid, db)
     dam.set_output_dir(results_folder)
     dam.assign_land(land_folder)
@@ -294,7 +294,7 @@ def worker_assign_hydraulics(sid, db, results_folder, land_folder, baseflow_meth
     if dam.nwm_id:
          lidar_date = dam.site_data.get('lidar_date')
     
-    dam.est_fatal_flows()
+    dam.est_fatal_flows(streamflow_source)
     dam.save_changes()
     
     return (int(dam.nwm_id), lidar_date) if dam.nwm_id and lidar_date else None
@@ -380,7 +380,7 @@ def threaded_prepare_data():
         comid_date_map = {}
         
         with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [executor.submit(worker_assign_hydraulics, sid, db, results_folder, land_folder, baseflow_method) for sid in site_ids]
+            futures = [executor.submit(worker_assign_hydraulics, sid, db, results_folder, land_folder, baseflow_method, streamflow_source) for sid in site_ids]
             
             completed_count = 0
             for future in as_completed(futures):
@@ -405,8 +405,8 @@ def threaded_prepare_data():
         json_loc = json_entry.get()
         # nwm_zarr is already defined above
 
-        rathcelon_input(
-            xlsx_path,
+        # CHANGED: Using db.to_json instead of rathcelon_input
+        db.to_json(
             json_loc,
             baseflow_method,
             nwm_zarr,

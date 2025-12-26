@@ -50,7 +50,7 @@ class LowHeadDam:
         self.dem_path = self.site_data.get('dem_path')
         self.res_meters = self.site_data.get('dem_resolution_m')
         self.lidar_year = self.site_data.get('lidar_year')
-        self.land_cover_path = self.site_data.get('land_path')
+        self.land_cover_path = self.site_data.get('land_raster')
 
         self.flowline_gdf: Optional[gpd.GeoDataFrame] = None
         self.incidents_df = self.db.get_site_incidents(self.site_id)
@@ -85,7 +85,11 @@ class LowHeadDam:
                 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 zarr_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.zarr')
                 if os.path.exists(zarr_path):
-                    ds = xr.open_zarr(zarr_path, consolidated=True)
+                    try:
+                        ds = xr.open_zarr(zarr_path, consolidated=True)
+                    except (KeyError, FileNotFoundError):
+                        ds = xr.open_zarr(zarr_path, consolidated=False)
+                    
                     try:
                         # Select feature and time
                         val = ds['streamflow'].sel(feature_id=int(self.nwm_id), time=date).values
@@ -112,7 +116,11 @@ class LowHeadDam:
             zarr_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.zarr')
             if os.path.exists(zarr_path):
                 try:
-                    ds = xr.open_zarr(zarr_path, consolidated=True)
+                    try:
+                        ds = xr.open_zarr(zarr_path, consolidated=True)
+                    except (KeyError, FileNotFoundError):
+                        ds = xr.open_zarr(zarr_path, consolidated=False)
+                    
                     median_val = ds['streamflow'].sel(feature_id=int(self.nwm_id)).median().values
                     return float(median_val)
                 except Exception:
@@ -135,11 +143,15 @@ class LowHeadDam:
 
         if found_date:
             self.site_data['lidar_date'] = found_date
-            self.site_data['baseflow_nwm'] = self.get_streamflow(found_date, "National Water Model")
-            self.site_data['baseflow_geo'] = self.get_streamflow(found_date, "GEOGLOWS")
+            if self.streamflow_source == 'National Water Model':
+                self.site_data['baseflow_nwm'] = self.get_streamflow(found_date, "National Water Model")
+            elif self.streamflow_source == 'GEOGLOWS':
+                self.site_data['baseflow_geo'] = self.get_streamflow(found_date, "GEOGLOWS")
         else:
-            self.site_data['baseflow_nwm'] = self.get_median_streamflow("National Water Model")
-            self.site_data['baseflow_geo'] = self.get_median_streamflow("GEOGLOWS")
+            if self.streamflow_source == 'National Water Model':
+                self.site_data['baseflow_nwm'] = self.get_median_streamflow("National Water Model")
+            elif self.streamflow_source == 'GEOGLOWS':
+                self.site_data['baseflow_geo'] = self.get_median_streamflow("GEOGLOWS")
 
         self.site_data['baseflow_method'] = baseflow_method
 
@@ -261,7 +273,7 @@ class LowHeadDam:
         if self.dem_path:
             land_raster = download_land_raster(self.site_id, str(self.dem_path), land_dir)
             self.land_cover_path = land_raster
-            self.site_data['land_path'] = land_raster
+            self.site_data['land_raster'] = land_raster
 
     def save_changes(self):
         """

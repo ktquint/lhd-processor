@@ -467,7 +467,7 @@ def create_mannings_esa(manning_txt: str):
         out_file.write('100\tMossLichen\t0.100')
 
 
-class Dam:
+class RathCelonDam:
     def __init__(self, **kwargs):
         def safe_path(p):
             if pd.isna(p) or p == "" or p is None:

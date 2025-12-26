@@ -1,4 +1,6 @@
 import os
+import s3fs
+import shutil
 import pandas as pd
 import numpy as np
 import xarray as xr
@@ -30,7 +32,11 @@ def create_reanalysis_file(comid_list, output_folder, source, package_root, comi
             # Ensure comid_list contains integers
             comid_list = [int(x) for x in comid_list]
             
-            ds = xr.open_zarr(zarr_path, consolidated=True)
+            try:
+                ds = xr.open_zarr(zarr_path, consolidated=True)
+            except (KeyError, FileNotFoundError):
+                print("Warning: Consolidated metadata not found. Retrying with consolidated=False...")
+                ds = xr.open_zarr(zarr_path, consolidated=False)
             
             # Filter IDs that actually exist in the dataset
             available_ids = ds['feature_id'].values
@@ -38,6 +44,8 @@ def create_reanalysis_file(comid_list, output_folder, source, package_root, comi
             
             if not valid_ids:
                 print("No valid IDs found in Zarr dataset.")
+                print(f"Requested (first 5): {comid_list[:5]}")
+                print(f"Available in Zarr (first 5): {available_ids[:5] if len(available_ids) > 0 else 'None'}")
                 return
 
             ds_subset = ds.sel(feature_id=valid_ids)
@@ -140,55 +148,41 @@ def create_reanalysis_file(comid_list, output_folder, source, package_root, comi
         print("No stats calculated.")
 
 
-def condense_zarr(comid_list, output_path):
+
+def condense_zarr(comid_list, output_zarr):
     """
-    Extracts NWM retrospective data for a list of COMIDs and saves to Zarr.
+    Reads NWM v3.0 Retrospective data from S3 for a specific list of COMIDs,
+    condenses it to daily averages, and saves it as a local Zarr store.
     """
-    if not comid_list:
-        print("No COMIDs provided for condense_zarr.")
-        return
+    # --- Setup S3 Connection ---
+    print("Connecting to NOAA NWM S3 Zarr store...")
+    fs = s3fs.S3FileSystem(anon=True)
+    s3_path = 's3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr'
 
-    if os.path.exists(output_path):
-        print(f"Zarr store already exists at {output_path}. Skipping extraction.")
-        return
-
-    print(f"Starting condense_zarr for {len(comid_list)} COMIDs...")
-    
-    # Ensure unique and integer
-    unique_feature_ids = list(set([int(x) for x in comid_list]))
-    
-    # --- Load dataset ---
-    print("Opening NWM dataset...")
-    ds = xr.open_zarr(
-        's3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr',
-        storage_options={'anon': True}
-    )
-
-    # --- Select streamflow data ---
-    print(f"Selecting streamflow data for {len(unique_feature_ids)} unique feature(s)...")
     try:
-        streamflow_subset = ds['streamflow'].sel(feature_id=unique_feature_ids)
-    except KeyError as e:
-        print(f"Error selecting feature_ids: {e}")
-        # Fallback: Filter IDs that actually exist in the dataset
-        available_ids = ds['feature_id'].values
-        valid_ids = [fid for fid in unique_feature_ids if fid in available_ids]
-        print(f"Filtered down to {len(valid_ids)} valid IDs found in NWM dataset.")
-        if not valid_ids:
-            print("No valid IDs found in NWM dataset.")
-            return
-        streamflow_subset = ds['streamflow'].sel(feature_id=valid_ids)
+        # Open remote dataset
+        ds = xr.open_zarr(s3fs.S3Map(s3_path, s3=fs), consolidated=True)
+    except Exception as e:
+        print(f"Error opening S3 Zarr: {e}")
+        return
 
-    # --- Resample to daily average ---
-    print("Resampling from hourly to daily average...")
-    # We use .compute() here to bring it into memory if it fits, or let dask handle it
-    # For large datasets, we might want to keep it lazy until save
-    daily_streamflow = streamflow_subset.resample(time='1D').mean()
+    # --- Filter and Process ---
+    # Convert list to integers to match feature_id type
+    unique_feature_ids = list(set(int(c) for c in comid_list))
 
-    # --- Build final dataset ---
+    print(f"Subsetting for {len(unique_feature_ids)} COMIDs...")
+    # Subset by feature_id (COMID)
+    ds_subset = ds.sel(feature_id=unique_feature_ids)
+
+    print("Resampling to daily averages (this may take a moment)...")
+    with ProgressBar():
+        # Resample from hourly to daily mean as seen in zarr2parquet logic
+        daily_streamflow = ds_subset['streamflow'].resample(time='1D').mean()
+
+    # --- Build Final Dataset ---
     final_ds = xr.Dataset({'streamflow': daily_streamflow})
-    
-    # --- Add metadata ---
+
+    # --- Add Metadata (Merged from zarr2parquet.py) ---
     final_ds.attrs = {
         'title': 'Selected COMIDs Daily Streamflow (cms)',
         'source': 'NOAA National Water Model v3.0 Retrospective',
@@ -198,24 +192,36 @@ def condense_zarr(comid_list, output_path):
         'created_by': 'LHD Processor',
         'selected_points': len(unique_feature_ids)
     }
+
     final_ds['streamflow'].attrs = {
         'long_name': 'Daily Average Streamflow',
         'units': 'cubic meters per second',
         'standard_name': 'water_volume_transport_in_river_channel'
     }
+
     final_ds['feature_id'].attrs = {
         'long_name': 'River Reach ID (NWM feature_id)',
         'description': 'Unique identifier for each river reach'
     }
 
-    # --- Save output to Zarr ---
-    print(f"Saving to: {output_path}")
-    
-    # Chunking for performance
+    # --- Prepare for Writing ---
+    # Chunking strategy: chunk by COMID, keep time dimension whole for time-series analysis
     final_ds = final_ds.chunk({'time': -1, 'feature_id': 100})
 
-    print(f"Writing to Zarr store... (this may take a moment)")
-    with ProgressBar():
-        final_ds.to_zarr(output_path, mode='w', consolidated=True)
+    # Clear encoding chunks to avoid the "mismatched Dask/Zarr chunks" error
+    for var in final_ds.variables:
+        if 'chunks' in final_ds[var].encoding:
+            del final_ds[var].encoding['chunks']
 
-    print("\n✅ Successfully saved daily retrospective data to Zarr!")
+    # --- Save to Zarr ---
+    print(f"Saving Zarr store to: {output_zarr}")
+
+    if os.path.exists(output_zarr):
+        print("Existing store found. Removing...")
+        shutil.rmtree(output_zarr)
+
+    with ProgressBar():
+        # Save directly to Zarr without converting to DataFrame/Parquet
+        final_ds.to_zarr(output_zarr, consolidated=True)
+
+    print(f"\n✅ Successfully saved daily retrospective Zarr to {output_zarr}")
