@@ -392,7 +392,7 @@ def threaded_prepare_data():
         # --- STAGE 4: BATCH DEMs (Parallel) ---
         utils.set_status(f"Stage 3/4: Downloading DEMs for {total_dams} sites (Parallel)...")
         
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             futures = [executor.submit(worker_assign_dem, sid, db, dem_folder, dem_resolution) for sid in site_ids]
             
             completed_count = 0

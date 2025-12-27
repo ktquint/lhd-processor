@@ -28,7 +28,7 @@ import json         # json encoding/decoding
 from shapely.geometry import Point, LineString #, MultiLineString, shape, mapping
 
 # local imports
-from .classes import Dam
+from .classes import RathCelonDam
 
 
 def create_flowfile(main_flowfile: str, flowfile_name: str, output_id: int|str, q_param: str) -> None:
@@ -157,7 +157,7 @@ def process_json_input(json_file):
         print(f"Processing dam: {dam_name} with parameters: {dam_dict}")
 
         # Call your existing processing logic here
-        dam_i = Dam(**dam_dict)
+        dam_i = RathCelonDam(**dam_dict)
         dam_i.process_dam()
 
 
@@ -198,7 +198,7 @@ def process_cli_arguments(args):
 
     # Call the existing processing logic here
     # process_dam(dam_dict)
-    dam_i = Dam(**dam_dict)
+    dam_i = RathCelonDam(**dam_dict)
     dam_i.process_dam()
 
 

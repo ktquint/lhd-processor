@@ -15,7 +15,7 @@ from scipy.stats import gumbel_r
 from shapely.geometry import Point
 
 # custom imports
-from .classes import Dam
+from .classes import RathCelonDam
 
 
 def get_stream_coords(stream_gdf: gpd.GeoDataFrame, rivid_field: str, rivids: list[int | str], method='centroid'):
@@ -148,7 +148,7 @@ def nwm_return_periods(ts_df: pd.DataFrame):
     return summary_df
 
 
-def create_reanalysis(dam: Dam, rivids_int: list, utm_crs, StrmShp_filtered_gdf):
+def create_reanalysis(dam: RathCelonDam, rivids_int: list, utm_crs, StrmShp_filtered_gdf):
     """
     This function handles fetching or calculating streamflow statistics.
     It supports:
@@ -439,7 +439,7 @@ def create_reanalysis(dam: Dam, rivids_int: list, utm_crs, StrmShp_filtered_gdf)
     return rivids_int, StrmShp_filtered_gdf
 
 
-def Process_and_Write_Retrospective_Data_for_Dam(dam: Dam):
+def Process_and_Write_Retrospective_Data_for_Dam(dam: RathCelonDam):
     """
     Finds the dam location, identifies upstream/downstream river segments,
     and then calls create_reanalysis to handle flow data processing.

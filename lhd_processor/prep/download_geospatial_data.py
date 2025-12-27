@@ -13,8 +13,9 @@ from pynhd import NLDI
 import geopandas as gpd
 from pyproj import Transformer
 from shapely.ops import transform
-from shapely.geometry import Point, box
+from shapely.geometry import Point, box, Polygon
 from datetime import datetime, timedelta
+import time
 
 try:
     import gdal
@@ -228,6 +229,21 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, res_meters=1):
             print(f"Dam {lhd_id}: Flowline GDF is empty.")
             return None, None, "No Flowlines"
 
+        # Ensure CRS is EPSG:4326
+        if flowline_gdf.crs and flowline_gdf.crs.to_epsg() != 4326:
+            try:
+                # print(f"Dam {lhd_id}: Reprojecting flowlines from {flowline_gdf.crs} to EPSG:4326")
+                flowline_gdf = flowline_gdf.to_crs(epsg=4326)
+            except Exception as e:
+                print(f"Dam {lhd_id}: Reprojection failed: {e}")
+                return None, None, "Reprojection Error"
+
+        # Remove empty geometries
+        flowline_gdf = flowline_gdf[~flowline_gdf.is_empty]
+        if flowline_gdf.empty:
+             print(f"Dam {lhd_id}: Flowline GDF contains only empty geometries.")
+             return None, None, "Empty Geometries"
+
         # 1. Setup Bounding Box (tuple of length 4) and buffered Geometry
         b = flowline_gdf.total_bounds
         
@@ -244,11 +260,16 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, res_meters=1):
             miny -= 0.0005
             maxy += 0.0005
 
+        # Apply buffer to the bbox coordinates directly
+        # This effectively creates an "envelope" around the flowline extent
+        buffer_deg = 0.002
+        minx -= buffer_deg
+        miny -= buffer_deg
+        maxx += buffer_deg
+        maxy += buffer_deg
+
         bbox = (float(minx), float(miny), float(maxx), float(maxy))
         
-        # CHANGED: Added .envelope to ensure a rectangular geometry (no curved edges)
-        geom = box(*bbox).buffer(0.001).envelope
-
         # 2. Extract Lidar Project Metadata
         try:
             sources_gdf = py3dep.query_3dep_sources(bbox)
@@ -277,14 +298,30 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, res_meters=1):
         # 3. Availability and Download Loop
         try:
             availability = py3dep.check_3dep_availability(bbox)
-        except Exception:
+        except Exception as e:
+            # DEBUG: Print why availability check failed
+            # print(f"Dam {lhd_id}: check_3dep_availability failed. BBox: {bbox}")
+            # print(f"Error: {e}")
             availability = {}
-
+            
         res_to_try = [1, 10] if (res_meters == 1 and availability.get('1m')) else [10]
 
         for res in res_to_try:
             # Note: crs="EPSG:4326" tells Py3DEP our 'geom' is WGS84
-            dem = py3dep.get_dem(geom, resolution=res, crs="EPSG:4326")
+            dem = None
+            last_error = None
+            for attempt in range(3):
+                try:
+                    # CHANGED: Pass bbox tuple directly to get_dem
+                    dem = py3dep.get_dem(bbox, resolution=res, crs="EPSG:4326")
+                    break
+                except Exception as e:
+                    last_error = e
+                    time.sleep(1 * (attempt + 1))
+            
+            if dem is None and last_error:
+                print(f"Dam {lhd_id}: py3dep.get_dem failed for res {res}m after retries. Error: {last_error}")
+                continue
 
             if dem is not None and not np.all(np.isnan(dem.values)):
                 clean_name = f"LHD_{lhd_id}_3DEP_{res}m_NAVD88.tif"
@@ -292,9 +329,14 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, res_meters=1):
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 dem.rio.to_raster(out_path)
                 return out_path, res, project_info
+        
+        # If we exit the loop without returning, it means no DEM was found
+        return None, None, "No DEM Found"
 
     except Exception as e:
         print(f"Error prepping Dam {lhd_id}: {e}")
+        if 'b' in locals():
+            print(f"  - Bounds used: {b}")
         return None, None, "Error"
 
 

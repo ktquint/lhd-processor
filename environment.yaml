@@ -11,7 +11,7 @@ dependencies:
   # Scientific & GIS Packages (from conda-forge for stability)
   - geopandas
   - matplotlib
-  - numpy
+  - numpy<2.0
   - pandas
   - xarray
   - rasterio
@@ -37,10 +37,7 @@ dependencies:
     - matplotlib_scalebar
     - hsclient
     - lazrs
-    - git+https://github.com/jlgutenson/rathcelon.git
-    - git+https://github.com/MikeFHS/automated-rating-curve.git
-
-  - pynhd
-  - py3dep
-  - hydrosignatures
-  - pygeohydro
+    - pynhd
+    - py3dep
+    - hydrosignatures
+    - pygeohydro
