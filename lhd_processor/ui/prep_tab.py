@@ -2,6 +2,7 @@ import gc
 import os
 import json
 import threading
+import pandas as pd
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from dask.distributed import Client, LocalCluster, as_completed as dask_as_completed
@@ -284,10 +285,21 @@ def worker_assign_dem(sid, db, dem_folder, dem_resolution):
     dam.assign_dem(dem_folder, dem_resolution)
     dam.save_changes()
 
-def worker_assign_hydraulics(sid, db, results_folder, land_folder, baseflow_method, streamflow_source):
+def worker_assign_hydraulics(sid, db, results_folder, land_folder, baseflow_method, streamflow_source, reanalysis_df=None):
     dam = PrepDam(sid, db)
     dam.set_output_dir(results_folder)
     dam.assign_land(land_folder)
+    
+    # Pass reanalysis data if available
+    if reanalysis_df is not None:
+        # Filter for this dam's COMID
+        if dam.nwm_id:
+             dam_stats = reanalysis_df[reanalysis_df['comid'] == int(dam.nwm_id)]
+             if not dam_stats.empty:
+                 # You can now use these stats inside est_dem_baseflow or est_fatal_flows if you modify them
+                 # For now, we just pass them or use them to set known values
+                 pass
+
     dam.est_dem_baseflow(baseflow_method)
     
     lidar_date = None
@@ -360,7 +372,24 @@ def threaded_prepare_data():
         else:
             utils.set_status("No COMIDs found to extract streamflow for.")
 
-        # --- STAGE 3: BATCH DEMs (Parallel) ---
+        # --- STAGE 3: REANALYSIS (Moved Up) ---
+        # Calculate stats NOW so they are available for Stage 4
+        reanalysis_df = None
+        if all_comids:
+            utils.set_status(f"Generating reanalysis for {len(all_comids)} reaches...")
+            # We pass None for comid_date_map initially because we haven't found lidar dates yet
+            # But we can re-run or update it later if needed. 
+            # Actually, create_reanalysis_file returns nothing, it saves to CSV.
+            # Let's modify it to return the DF or read it back.
+            create_reanalysis_file(list(all_comids), results_folder, streamflow_source, package_root, comid_date_map=None, db_manager=db)
+            
+            # Determine filename based on source
+            filename = "nwm_reanalysis.csv" if streamflow_source == 'National Water Model' else "geoglows_reanalysis.csv"
+            reanalysis_path = os.path.join(results_folder, filename)
+            if os.path.exists(reanalysis_path):
+                reanalysis_df = pd.read_csv(reanalysis_path)
+
+        # --- STAGE 4: BATCH DEMs (Parallel) ---
         utils.set_status(f"Stage 3/4: Downloading DEMs for {total_dams} sites (Parallel)...")
         
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -375,12 +404,13 @@ def threaded_prepare_data():
                 except Exception as e:
                     print(f"Error in DEM worker: {e}")
 
-        # --- STAGE 4: BATCH LAND USE & HYDRAULICS (Parallel) ---
+        # --- STAGE 5: BATCH LAND USE & HYDRAULICS (Parallel) ---
         utils.set_status(f"Stage 4/4: Finalizing Land Use and Baseflows (Parallel)...")
         comid_date_map = {}
         
         with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [executor.submit(worker_assign_hydraulics, sid, db, results_folder, land_folder, baseflow_method, streamflow_source) for sid in site_ids]
+            # Pass reanalysis_df to the worker
+            futures = [executor.submit(worker_assign_hydraulics, sid, db, results_folder, land_folder, baseflow_method, streamflow_source, reanalysis_df) for sid in site_ids]
             
             completed_count = 0
             for future in as_completed(futures):
@@ -393,10 +423,11 @@ def threaded_prepare_data():
                 except Exception as e:
                     print(f"Error in Hydraulics worker: {e}")
 
-        # --- REANALYSIS ---
-        if all_comids:
-            utils.set_status(f"Generating reanalysis for {len(all_comids)} reaches...")
-            create_reanalysis_file(list(all_comids), results_folder, streamflow_source, package_root, comid_date_map)
+        # --- FINAL REANALYSIS UPDATE (Optional) ---
+        # If we found new LiDAR dates, we might want to update the "known_baseflow" column in the reanalysis file
+        if all_comids and comid_date_map:
+             utils.set_status("Updating reanalysis with found LiDAR dates...")
+             create_reanalysis_file(list(all_comids), results_folder, streamflow_source, package_root, comid_date_map, db_manager=db)
 
         # --- FINALIZATION ---
         utils.set_status("Saving database and creating RathCelon input file...")

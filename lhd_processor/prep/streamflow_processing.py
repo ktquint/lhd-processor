@@ -1,22 +1,36 @@
 import os
 import s3fs
-import shutil
 import pandas as pd
 import numpy as np
 import xarray as xr
 from dask.diagnostics import ProgressBar
 
-def create_reanalysis_file(comid_list, output_folder, source, package_root, comid_date_map=None):
+def create_reanalysis_file(comid_list, output_folder, source, package_root, comid_date_map=None, db_manager=None):
     """
     Generates a reanalysis CSV with flow statistics for the given COMIDs.
+    Optionally updates the database with the found baseflow values.
     """
     if not comid_list:
         print("No COMIDs provided for reanalysis.")
         return
     
-    reanalysis_path = os.path.join(output_folder, "reanalysis.csv")
-    if os.path.exists(reanalysis_path):
+    # Dynamic filename based on source
+    filename = "nwm_reanalysis.csv" if source == 'National Water Model' else "geoglows_reanalysis.csv"
+    reanalysis_path = os.path.join(package_root, 'data', filename)
+    
+    # If we are updating with new dates, we might want to overwrite or merge
+    # For now, let's assume if comid_date_map is provided, we are doing a second pass
+    if os.path.exists(reanalysis_path) and not comid_date_map:
         print(f"Reanalysis file already exists at {reanalysis_path}. Skipping generation.")
+        
+        # If db_manager is provided, try to update DB from existing file
+        if db_manager:
+            print("Reading existing reanalysis file to update database...")
+            try:
+                existing_df = pd.read_csv(reanalysis_path)
+                _update_db_from_stats(existing_df.to_dict('records'), db_manager, source)
+            except Exception as e:
+                print(f"Failed to read existing reanalysis: {e}")
         return
 
     stats_list = []
@@ -41,6 +55,12 @@ def create_reanalysis_file(comid_list, output_folder, source, package_root, comi
             # Filter IDs that actually exist in the dataset
             available_ids = ds['feature_id'].values
             valid_ids = [fid for fid in comid_list if fid in available_ids]
+
+            # Log missing IDs
+            missing_ids = set(comid_list) - set(valid_ids)
+            if missing_ids:
+                print(f"Warning: {len(missing_ids)} requested COMIDs were not found in the Zarr index.")
+                print(f"Sample missing: {list(missing_ids)[:5]}")
             
             if not valid_ids:
                 print("No valid IDs found in Zarr dataset.")
@@ -71,12 +91,24 @@ def create_reanalysis_file(comid_list, output_folder, source, package_root, comi
         # Process each COMID
         unique_ids = df['feature_id'].unique()
         for comid in unique_ids:
-            site_df = df[df['feature_id'] == comid]
+            # Filter the dataframe for this specific COMID
+            site_df = df[df['feature_id'] == comid].copy()
             if site_df.empty: continue
 
-            # Flow stats
-            q_median = site_df['streamflow'].median()
-            q_max = site_df['streamflow'].max()
+            # Ensure 'streamflow' is numeric and not interpreted as a date
+            # This prevents the error where Pandas thinks it's working with datetime objects
+            site_df['streamflow'] = pd.to_numeric(site_df['streamflow'], errors='coerce')
+
+            # Drop any NaNs that might have resulted from coercion
+            valid_flow = site_df.dropna(subset=['streamflow'])
+
+            if valid_flow.empty:
+                print(f"Warning: COMID {comid} exists in Zarr but has no valid streamflow data (all NaNs).")
+                continue
+
+            # Now perform numeric calculations
+            q_median = valid_flow['streamflow'].median()
+            q_max = valid_flow['streamflow'].max()
 
             # Known Baseflow Logic
             known_baseflow = q_median
@@ -144,84 +176,113 @@ def create_reanalysis_file(comid_list, output_folder, source, package_root, comi
         out_df = out_df[cols]
         out_df.to_csv(reanalysis_path, index=False)
         print(f"Reanalysis file saved to {reanalysis_path}")
+
+        if db_manager:
+            _update_db_from_stats(stats_list, db_manager, source)
     else:
         print("No stats calculated.")
 
 
+def _update_db_from_stats(stats_list, db_manager, source):
+    """Helper to update database from stats list"""
+    print(f"Updating database with baseflow values from {source}...")
+    col_name = 'baseflow_nwm' if source == 'National Water Model' else 'baseflow_geo'
+    id_col = 'reach_id' if source == 'National Water Model' else 'linkno'
+    
+    # Ensure we have the sites loaded
+    sites_df = db_manager.sites
+    
+    count = 0
+    for row in stats_list:
+        try:
+            comid = int(row['comid'])
+            baseflow = float(row['known_baseflow'])
+            
+            # Filter where id_col is not null/nan
+            valid_sites = sites_df[pd.notna(sites_df[id_col])].copy()
+            # Convert to int for comparison (handling floats like 123.0)
+            valid_sites['temp_id'] = valid_sites[id_col].astype(float).astype(int)
+            matches = valid_sites[valid_sites['temp_id'] == comid]
+            
+            for _, site in matches.iterrows():
+                db_manager.update_site_data(site['site_id'], {col_name: baseflow})
+                count += 1
+        except Exception as e:
+            print(f"Error updating site for COMID {row.get('comid')}: {e}")
+    
+    db_manager.save()
+    print(f"Database updated: {count} sites modified.")
+
 
 def condense_zarr(comid_list, output_zarr):
     """
-    Reads NWM v3.0 Retrospective data from S3 for a specific list of COMIDs,
-    condenses it to daily averages, and saves it as a local Zarr store.
+    Checks the local Zarr store for existing COMIDs and only downloads/appends
+    missing ones from the S3 NWM v3.0 Retrospective data.
     """
-    # --- Setup S3 Connection ---
+    # 1. Identify which COMIDs we actually need to fetch
+    existing_ids = []
+    if os.path.exists(output_zarr):
+        try:
+            ds_existing = xr.open_zarr(output_zarr, consolidated=True)
+            existing_ids = ds_existing.feature_id.values.tolist()
+            print(f"Local Zarr found with {len(existing_ids)} existing COMIDs.")
+        except Exception as e:
+            print(f"Warning: Could not read existing Zarr, starting fresh: {e}")
+
+    # Filter for IDs not already in the store
+    unique_requested = list(set(int(c) for c in comid_list))
+    new_ids = [fid for fid in unique_requested if fid not in existing_ids]
+
+    if not new_ids:
+        print("✅ All requested COMIDs already exist in the local Zarr store.")
+        return
+
+    print(f"Adding {len(new_ids)} new COMIDs to the local store...")
+
+    # 2. Setup S3 Connection for new IDs
     print("Connecting to NOAA NWM S3 Zarr store...")
     fs = s3fs.S3FileSystem(anon=True)
     s3_path = 's3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr'
 
     try:
-        # Open remote dataset
-        ds = xr.open_zarr(s3fs.S3Map(s3_path, s3=fs), consolidated=True)
+        ds_remote = xr.open_zarr(s3fs.S3Map(s3_path, s3=fs), consolidated=True)
     except Exception as e:
         print(f"Error opening S3 Zarr: {e}")
         return
 
-    # --- Filter and Process ---
-    # Convert list to integers to match feature_id type
-    unique_feature_ids = list(set(int(c) for c in comid_list))
-
-    print(f"Subsetting for {len(unique_feature_ids)} COMIDs...")
-    # Subset by feature_id (COMID)
-    ds_subset = ds.sel(feature_id=unique_feature_ids)
-
-    print("Resampling to daily averages (this may take a moment)...")
+    # 3. Subset and Process only the new IDs
+    ds_subset = ds_remote.sel(feature_id=new_ids)
+    print("Resampling new data to daily averages...")
     with ProgressBar():
-        # Resample from hourly to daily mean as seen in zarr2parquet logic
         daily_streamflow = ds_subset['streamflow'].resample(time='1D').mean()
 
-    # --- Build Final Dataset ---
-    final_ds = xr.Dataset({'streamflow': daily_streamflow})
-
-    # --- Add Metadata (Merged from zarr2parquet.py) ---
-    final_ds.attrs = {
+    # 4. Build Dataset with same structure and metadata
+    new_ds = xr.Dataset({'streamflow': daily_streamflow})
+    new_ds.attrs = {
         'title': 'Selected COMIDs Daily Streamflow (cms)',
         'source': 'NOAA National Water Model v3.0 Retrospective',
         'units': 'cubic meters per second (cms)',
         'temporal_resolution': 'daily average',
-        'original_resolution': 'hourly',
-        'created_by': 'LHD Processor',
-        'selected_points': len(unique_feature_ids)
+        'created_by': 'LHD Processor (Auto-Updater)'
     }
 
-    final_ds['streamflow'].attrs = {
-        'long_name': 'Daily Average Streamflow',
-        'units': 'cubic meters per second',
-        'standard_name': 'water_volume_transport_in_river_channel'
-    }
+    # Chunking: must match the existing store's chunking for successful appending
+    new_ds = new_ds.chunk({'time': -1, 'feature_id': 100})
 
-    final_ds['feature_id'].attrs = {
-        'long_name': 'River Reach ID (NWM feature_id)',
-        'description': 'Unique identifier for each river reach'
-    }
+    # Clear encoding to prevent "mismatched chunks" error
+    for var in new_ds.variables:
+        if 'chunks' in new_ds[var].encoding:
+            del new_ds[var].encoding['chunks']
 
-    # --- Prepare for Writing ---
-    # Chunking strategy: chunk by COMID, keep time dimension whole for time-series analysis
-    final_ds = final_ds.chunk({'time': -1, 'feature_id': 100})
-
-    # Clear encoding chunks to avoid the "mismatched Dask/Zarr chunks" error
-    for var in final_ds.variables:
-        if 'chunks' in final_ds[var].encoding:
-            del final_ds[var].encoding['chunks']
-
-    # --- Save to Zarr ---
-    print(f"Saving Zarr store to: {output_zarr}")
-
+    # 5. Save/Append to Zarr
     if os.path.exists(output_zarr):
-        print("Existing store found. Removing...")
-        shutil.rmtree(output_zarr)
+        print(f"Appending new data to {output_zarr}...")
+        with ProgressBar():
+            # 'a' mode appends to the specified dimension
+            new_ds.to_zarr(output_zarr, mode='a', append_dim='feature_id', consolidated=True)
+    else:
+        print(f"Creating new Zarr store at {output_zarr}...")
+        with ProgressBar():
+            new_ds.to_zarr(output_zarr, mode='w', consolidated=True)
 
-    with ProgressBar():
-        # Save directly to Zarr without converting to DataFrame/Parquet
-        final_ds.to_zarr(output_zarr, consolidated=True)
-
-    print(f"\n✅ Successfully saved daily retrospective Zarr to {output_zarr}")
+    print(f"\n✅ Successfully updated Zarr store. Total COMIDs: {len(existing_ids) + len(new_ids)}")

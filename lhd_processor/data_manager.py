@@ -21,6 +21,7 @@ class DatabaseManager:
             'dem_path', 'dem_resolution_m', 'lidar_project',
             'flowline_source', 'streamflow_source',
             'flowline_path_nhd', 'flowline_path_tdx',
+            'reach_id', 'linkno',  # Added these to schema
             'baseflow_nwm', 'baseflow_geo',
             'P_known', 'output_dir',
             'baseflow_method', 'lidar_date', 'dem_source_info',
@@ -40,10 +41,16 @@ class DatabaseManager:
             'y_t', 'y_flip', 'y_2', 'jump_type'
         ]
 
+        # Map sources to sheet names
+        self.source_map = {
+            'National Water Model': 'Results_NWM',
+            'GEOGLOWS': 'Results_GEOGLOWS'
+        }
+
         self.sites = pd.DataFrame()
         self.incidents = pd.DataFrame()
         self.xsections = pd.DataFrame()
-        self.results = pd.DataFrame()
+        self.results = {k: pd.DataFrame() for k in self.source_map}
 
         self.load()
 
@@ -60,7 +67,7 @@ class DatabaseManager:
                 self.sites = pd.DataFrame(columns=self.sites_schema)
                 self.incidents = pd.DataFrame(columns=self.incidents_schema)
                 self.xsections = pd.DataFrame(columns=self.xsections_schema)
-                self.results = pd.DataFrame(columns=self.results_schema)
+                self.results = {k: pd.DataFrame(columns=self.results_schema) for k in self.source_map}
             else:
                 try:
                     xls = pd.ExcelFile(self.filepath)
@@ -75,7 +82,8 @@ class DatabaseManager:
                     self.sites = load_sheet('Sites', self.sites_schema)
                     self.incidents = load_sheet('Incidents', self.incidents_schema)
                     self.xsections = load_sheet('CrossSections', self.xsections_schema)
-                    self.results = load_sheet('HydraulicResults', self.results_schema)
+                    for source, sheet in self.source_map.items():
+                        self.results[source] = load_sheet(sheet, self.results_schema)
 
                 except Exception as e:
                     print(f"Error loading database: {e}")
@@ -95,7 +103,8 @@ class DatabaseManager:
                     self.sites.to_excel(writer, sheet_name='Sites', index=False)
                     self.incidents.to_excel(writer, sheet_name='Incidents', index=False)
                     self.xsections.to_excel(writer, sheet_name='CrossSections', index=False)
-                    self.results.to_excel(writer, sheet_name='HydraulicResults', index=False)
+                    for source, sheet in self.source_map.items():
+                        self.results[source].to_excel(writer, sheet_name=sheet, index=False)
             except Exception as e:
                 print(f"Error saving database: {e}")
 
@@ -117,6 +126,17 @@ class DatabaseManager:
                 pass
             return self.incidents[self.incidents['site_id'] == site_id].copy()
 
+    def get_site_results(self, site_id, source):
+        with self.lock:
+            try:
+                site_id = int(site_id)
+            except:
+                pass
+            if source in self.results:
+                df = self.results[source]
+                return df[df['site_id'] == site_id].copy()
+            return pd.DataFrame(columns=self.results_schema)
+
     # --- Updaters ---
     def update_site_data(self, site_id, data_dict):
         with self.lock:
@@ -132,6 +152,10 @@ class DatabaseManager:
             else:
                 idx = self.sites[self.sites['site_id'] == site_id].index[0]
                 for key, val in filtered_dict.items():
+                    # Explicitly cast to object if necessary to avoid FutureWarning
+                    if key in self.sites.columns:
+                        if self.sites[key].dtype == 'float64' and isinstance(val, str):
+                            self.sites[key] = self.sites[key].astype('object')
                     self.sites.at[idx, key] = val
 
     def update_site_incidents(self, site_id, updates_df):
@@ -144,7 +168,7 @@ class DatabaseManager:
                 updates_df['site_id'] = site_id
                 self.incidents = pd.concat([self.incidents, updates_df], ignore_index=True)
 
-    def update_analysis_results(self, site_id, xs_data, hydraulic_data):
+    def update_analysis_results(self, site_id, xs_data, hydraulic_data, source='National Water Model'):
         with self.lock:
             site_id = int(site_id)
 
@@ -157,12 +181,31 @@ class DatabaseManager:
                 self.xsections = pd.concat([self.xsections, new_xs], ignore_index=True)
 
             # 2. Update HydraulicResults
-            self.results = self.results[self.results['site_id'] != site_id]
+            if source not in self.results:
+                source = 'National Water Model'
+
+            current_df = self.results[source]
+            current_df = current_df[current_df['site_id'] != site_id]
+
             if hydraulic_data:
                 new_res = pd.DataFrame(hydraulic_data)
                 new_res['site_id'] = site_id
                 new_res = self._enforce_schema(new_res, self.results_schema)
-                self.results = pd.concat([self.results, new_res], ignore_index=True)
+                current_df = pd.concat([current_df, new_res], ignore_index=True)
+
+            self.results[source] = current_df
+
+    def update_site_results(self, site_id, df, source):
+        with self.lock:
+            site_id = int(site_id)
+            if source in self.results:
+                current_df = self.results[source]
+                current_df = current_df[current_df['site_id'] != site_id]
+                if not df.empty:
+                    df = self._enforce_schema(df.copy(), self.results_schema)
+                    df['site_id'] = site_id
+                    current_df = pd.concat([current_df, df], ignore_index=True)
+                self.results[source] = current_df
 
     def to_json(self, json_output_path, baseflow_method, nwm_parquet, flowline_source, streamflow_source):
         """

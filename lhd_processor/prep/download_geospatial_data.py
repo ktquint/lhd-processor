@@ -32,25 +32,46 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
     and standardizes ID columns.
     """
     nldi = NLDI()
-    comid_df = nldi.comid_byloc((lon, lat))
+    try:
+        comid_df = nldi.comid_byloc((lon, lat))
+    except Exception as e:
+        print(f"NLDI Error: {e}")
+        return None, None
+
     if comid_df.empty:
         print(f"No NHD COMID found for location: {lat}, {lon}")
         return None, None
 
     comid_val = comid_df.comid.values[0]
+    
+    # OPTIMIZATION: Check if file already exists
+    os.makedirs(flowline_dir, exist_ok=True)
+    output_path = os.path.join(flowline_dir, f"nhd_flowline_{comid_val}.gpkg")
+    
+    if os.path.exists(output_path):
+        try:
+            # print(f"Found existing flowline file: {output_path}") # User asked to limit prints
+            gdf = gpd.read_file(output_path)
+            return output_path, gdf
+        except Exception as e:
+            print(f"Error reading existing file, redownloading: {e}")
+
     all_reaches = []
     nav_modes = ["upstreamMain", "downstreamMain"]
 
     for mode in nav_modes:
-        reach = nldi.navigate_byid(
-            fsource="comid",
-            fid=str(comid_val),
-            navigation=mode,
-            source="flowlines",
-            distance=distance_km
-        )
-        if not reach.empty:
-            all_reaches.append(reach)
+        try:
+            reach = nldi.navigate_byid(
+                fsource="comid",
+                fid=str(comid_val),
+                navigation=mode,
+                source="flowlines",
+                distance=distance_km
+            )
+            if not reach.empty:
+                all_reaches.append(reach)
+        except Exception as e:
+            print(f"NLDI Navigation Error ({mode}): {e}")
 
     if not all_reaches:
         return None, None
@@ -71,19 +92,20 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
 
     # Fetch the VAA table (hydroseq and dnhydroseq are in the 'vaa' service)
     # Note: nhdplus_vaa() fetches the national parquet file
-    vaa_df = nhd.nhdplus_vaa()
-    vaa_subset = vaa_df[['comid', 'hydroseq', 'dnhydroseq']].rename(columns={'comid': 'nhdplusid'})
+    try:
+        vaa_df = nhd.nhdplus_vaa()
+        vaa_subset = vaa_df[['comid', 'hydroseq', 'dnhydroseq']].rename(columns={'comid': 'nhdplusid'})
 
-    # Merge VAAs into the flowline dataframe
-    combined_df = combined_df.merge(vaa_subset, on='nhdplusid', how='left')
+        # Merge VAAs into the flowline dataframe
+        combined_df = combined_df.merge(vaa_subset, on='nhdplusid', how='left')
+    except Exception as e:
+        print(f"Warning: Could not fetch/merge VAAs: {e}")
     # ----------------------------
 
     combined_gdf = gpd.GeoDataFrame(combined_df, crs=all_reaches[0].crs)
     combined_gdf = combined_gdf.drop_duplicates(subset='nhdplusid')
 
-    os.makedirs(flowline_dir, exist_ok=True)
-    output_path = os.path.join(flowline_dir, f"nhd_flowline_{comid_val}.gpkg")
-
+    # output_path is already defined above
     if not os.path.exists(output_path):
         combined_gdf.to_file(output_path, driver="GPKG", layer="NHDFlowline")
         print(f"Flowlines saved to: {output_path}")
@@ -97,6 +119,10 @@ def navigate_tdx_network(dam_point: Point, gpkg_path: str, distance_km: float = 
         At junctions, it follows the main stem (highest strmOrder).
     """
     streams = gpd.read_file(gpkg_path, bbox=dam_point.buffer(0.1))
+
+    if streams.empty:
+        print("No streams found in VPU file near dam location.")
+        return gpd.GeoDataFrame(), -1
 
     # 1. Find the starting reach
     nearest_idx = streams.sindex.nearest(dam_point, return_all=False)[1]
@@ -134,7 +160,7 @@ def navigate_tdx_network(dam_point: Point, gpkg_path: str, distance_km: float = 
                         # Pick the "Main Stem" based on highest stream order
                         main_stem = upstream_candidates.sort_values('strmOrder', ascending=False).iloc[0]
                         next_ids = [main_stem['LINKNO']]
-                        print(f"Junction at LINKNO {cid}: Following main stem (Order {main_stem['strmOrder']})")
+                        # print(f"Junction at LINKNO {cid}: Following main stem (Order {main_stem['strmOrder']})")
                     else:
                         next_ids = upstream_candidates['LINKNO'].values
 
@@ -166,7 +192,7 @@ def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, 
     vpu_polygon = vpu_gdf[vpu_gdf.contains(dam_point)]
 
     if vpu_polygon.empty:
-        return None
+        return None, None
     # 2. extract the vpu to download
     vpu_col = [c for c in vpu_polygon.columns if c.lower() in ['vpu', 'vpucode']][0]
     vpu_code = str(vpu_polygon.iloc[0][vpu_col])
@@ -179,6 +205,7 @@ def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, 
             f_out.write(f_in.read())
 
     flowline_gdf, linkno = navigate_tdx_network(dam_point, flowline_vpu)
+    
     output_path = os.path.join(flowline_dir, f"tdx_flowline_{linkno}.gpkg")
 
     if not os.path.exists(output_path):
@@ -197,13 +224,37 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, res_meters=1):
     Fetches 3DEP DEM using flowline extent with 10m fallback and metadata tracking.
     """
     try:
+        if flowline_gdf is None or flowline_gdf.empty:
+            print(f"Dam {lhd_id}: Flowline GDF is empty.")
+            return None, None, "No Flowlines"
+
         # 1. Setup Bounding Box (tuple of length 4) and buffered Geometry
         b = flowline_gdf.total_bounds
-        bbox = (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
-        geom = box(*bbox).buffer(0.002)  # ~200m buffer
+        
+        if np.any(np.isnan(b)):
+             print(f"Dam {lhd_id}: Flowline bounds contain NaNs.")
+             return None, None, "Invalid Bounds"
+
+        # Ensure bbox has non-zero dimensions to avoid degenerate polygons
+        minx, miny, maxx, maxy = b
+        if maxx - minx < 1e-5:
+            minx -= 0.0005
+            maxx += 0.0005
+        if maxy - miny < 1e-5:
+            miny -= 0.0005
+            maxy += 0.0005
+
+        bbox = (float(minx), float(miny), float(maxx), float(maxy))
+        
+        # CHANGED: Added .envelope to ensure a rectangular geometry (no curved edges)
+        geom = box(*bbox).buffer(0.001).envelope
 
         # 2. Extract Lidar Project Metadata
-        sources_gdf = py3dep.query_3dep_sources(bbox)
+        try:
+            sources_gdf = py3dep.query_3dep_sources(bbox)
+        except Exception as e:
+            print(f"Warning: Could not query 3DEP sources: {e}")
+            sources_gdf = gpd.GeoDataFrame()
 
         project_info = "Unknown"
         if not sources_gdf.empty:
@@ -221,13 +272,14 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, res_meters=1):
                     names = relevant_sources[actual_col].unique().tolist()
                     project_info = "; ".join(map(str, names))
                 else:
-                    # Fallback: if we can't find the name, just list all available columns
-                    # to help you debug the next one
-                    print(f"DEBUG: Metadata columns found: {relevant_sources.columns.tolist()}")
                     project_info = "Metadata columns mismatch"
 
         # 3. Availability and Download Loop
-        availability = py3dep.check_3dep_availability(bbox)
+        try:
+            availability = py3dep.check_3dep_availability(bbox)
+        except Exception:
+            availability = {}
+
         res_to_try = [1, 10] if (res_meters == 1 and availability.get('1m')) else [10]
 
         for res in res_to_try:
