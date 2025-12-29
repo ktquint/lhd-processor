@@ -475,7 +475,18 @@ class RathCelonDam:
             return Path(p)
         # required parameters
         self.name = kwargs['name']
-        self.csv_path = safe_path(kwargs['dam_csv'])  # Use safe_path
+
+        # Define data directory
+        self.data_dir = Path(__file__).parent.parent / 'data'
+
+        # Handle dam_csv
+        if 'dam_csv' in kwargs and kwargs['dam_csv']:
+            self.csv_path = safe_path(kwargs['dam_csv'])
+        else:
+            self.csv_path = self.data_dir / 'nhd_nwm.xlsx'
+            if 'dam_id_field' not in kwargs:
+                kwargs['dam_id_field'] = 'site_id'
+
         self.id_field = kwargs['dam_id_field']
         self.dam_id = kwargs['dam_id']
         self.flowline = safe_path(kwargs['flowline'])  # Use safe_path
@@ -510,6 +521,12 @@ class RathCelonDam:
         self.manning = None
 
         self.flowline_gdf = None
+
+    def read_dam_data(self):
+        if self.csv_path.suffix == '.xlsx':
+            return pd.read_excel(self.csv_path)
+        else:
+            return pd.read_csv(self.csv_path)
 
     def _create_arc_input_txt(self, comid, Q_baseflow, Q_max):
 
@@ -574,7 +591,7 @@ class RathCelonDam:
 
         # Read stream shapefile and dam locations
         dam_flowline_gdf = gpd.read_file(self.dam_shp, engine='fiona')
-        dam_gdf = pd.read_csv(self.csv_path)
+        dam_gdf = self.read_dam_data()
         dam_gdf = gpd.GeoDataFrame(dam_gdf, geometry=gpd.points_from_xy(dam_gdf['longitude'], dam_gdf['latitude']),
                                    crs="EPSG:4269")
 
@@ -919,8 +936,8 @@ class RathCelonDam:
             print(f"Using existing files. Set rivid_field to: {self.rivid_field}")
             print(self.rivids)
 
-        elif self.flowline_gdf is not None and os.path.isfile(self.dam_shp) is False and os.path.isfile(
-                self.reanalysis_csv) is False:
+        elif self.flowline_gdf is not None and (os.path.isfile(self.dam_shp) is False or os.path.isfile(
+                self.reanalysis_csv) is False):
 
             # This block now correctly uses self.rivid_field which was set in process_dam
             print('Running Function: Process_and_Write_Retrospective_Data_for_Dam')
@@ -963,7 +980,7 @@ class RathCelonDam:
         # Create the Bathy Input File
 
         # Let's extract the weir length real quick
-        dam_df = pd.read_csv(self.csv_path)
+        dam_df = self.read_dam_data()
         # Filter to the specific dam
         dam_df = dam_df[dam_df[self.id_field] == self.dam_id]
         self.weir_length = dam_df['weir_length'].values[0]
@@ -987,7 +1004,7 @@ class RathCelonDam:
             print('You want to pair known_baseflow with bathy_use_banks set to False.')
             sys.exit("Terminating: Invalid input combination.")
 
-        self._create_arc_input_txt("COMID", Q_bf_param, 'rp2')
+        self._create_arc_input_txt("comid", Q_bf_param, 'rp2')
 
     def process_dam(self):
         # Folder Management

@@ -122,7 +122,7 @@ def setup_prep_tab(parent_tab):
     rath_frame.columnconfigure(1, weight=1)
 
     # Row 0: Input File Selection (Strict Check because this is an INPUT for step 2)
-    ttk.Label(rath_frame, text="Input File (.json):").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+    ttk.Label(rath_frame, text="Input File (.json or .xlsx):").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
 
     rath_json_entry = ttk.Entry(rath_frame)
     rath_json_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
@@ -225,7 +225,7 @@ def select_json_file():
 
 
 def select_rath_json():
-    f = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+    f = filedialog.askopenfilename(filetypes=[("JSON or Excel", "*.json *.xlsx")])
     if f:
         rath_json_entry.delete(0, tk.END)
         rath_json_entry.insert(0, f)
@@ -466,13 +466,21 @@ def threaded_run_rathcelon():
 
         json_loc = rath_json_entry.get()
         if not os.path.exists(json_loc):
-            messagebox.showerror("Error", "JSON file not found.")
+            messagebox.showerror("Error", "Input file not found.")
             return
 
-        with open(json_loc, 'r') as f:
-            data = json.load(f)
+        dams = []
+        if json_loc.endswith('.json'):
+            with open(json_loc, 'r') as f:
+                data = json.load(f)
+            dams = data.get("dams", [])
+        elif json_loc.endswith('.xlsx'):
+            df = pd.read_excel(json_loc)
+            dams = df.to_dict(orient='records')
+        else:
+            messagebox.showerror("Error", "Unsupported file format. Please use .json or .xlsx")
+            return
 
-        dams = data.get("dams", [])
         total_dams = len(dams)
 
         dams_to_process = []

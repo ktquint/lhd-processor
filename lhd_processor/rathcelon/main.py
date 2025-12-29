@@ -18,6 +18,7 @@ import argparse # parses command-line args
 
 # third-party imports
 from geopandas import GeoDataFrame  # object for geospatial data + tabular data
+import pandas as pd
 
 try:
     import gdal                         # geospatial data abstraction library (gdal)
@@ -161,6 +162,61 @@ def process_json_input(json_file):
         dam_i.process_dam()
 
 
+def process_excel_input(excel_file):
+    """Process input from an Excel file."""
+    print(f'Opening {excel_file}')
+    df = pd.read_excel(excel_file)
+    
+    # Convert DataFrame to list of dictionaries
+    dams = df.to_dict(orient='records')
+
+    # Helper to handle NaNs/None/Empty strings safely
+    def safe_normpath(path_val):
+        if isinstance(path_val, str) and path_val.strip():
+            return os.path.normpath(path_val)
+        return None
+
+    for dam in dams:
+        dam_name = dam.get("name")
+
+        # Update these lines to use the safe helper
+        dam_csv = safe_normpath(dam.get("dam_csv"))
+        flowline = safe_normpath(dam.get("flowline"))
+        dem_dir = safe_normpath(dam.get("dem_dir"))
+        output_dir = safe_normpath(dam.get("output_dir"))
+        land_raster = safe_normpath(dam.get("land_raster"))
+
+        dam_dict = {
+            "name": dam_name,
+            "dam_csv": dam_csv,
+            "dam_id_field": dam.get("dam_id_field"),
+            "dam_id": int(dam.get("dam_id")),
+            "flowline": flowline,
+            "dem_dir": dem_dir,
+            "land_raster": land_raster,
+            "output_dir": output_dir,
+            "bathy_use_banks": dam.get("bathy_use_banks", False),
+            "flood_waterlc_and_strm_cells": dam.get("flood_waterlc_and_strm_cells", False),
+            "process_stream_network": dam.get("process_stream_network", False),
+            "find_banks_based_on_landcover": dam.get("find_banks_based_on_landcover", True),
+            "create_reach_average_curve_file": dam.get("create_reach_average_curve_file", False),
+            "known_baseflow": dam.get("known_baseflow", None),
+            "known_channel_forming_discharge": dam.get("known_channel_forming_discharge", None),
+            "upstream_elevation_change_threshold": dam.get("upstream_elevation_change_threshold", 1.0),
+            "streamflow": safe_normpath(dam.get("streamflow")),
+        }
+
+        # Ensure the output directory exists (check if it's not None first)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        print(f"Processing dam: {dam_name} with parameters: {dam_dict}")
+
+        # Call your existing processing logic here
+        dam_i = RathCelonDam(**dam_dict)
+        dam_i.process_dam()
+
+
 def normalize_path(path):
     if path:
         return os.path.normpath(path)
@@ -211,6 +267,10 @@ def main():
     json_parser = subparsers.add_parser("json", help="Process watersheds from a JSON file")
     json_parser.add_argument("json_file", type=str, help="Path to the JSON file")
 
+    # Subcommand for Excel input
+    excel_parser = subparsers.add_parser("excel", help="Process watersheds from an Excel file")
+    excel_parser.add_argument("excel_file", type=str, help="Path to the Excel file")
+
     # Subcommand for CLI input
     cli_parser = subparsers.add_parser("cli", help="Process watershed parameters via CLI")
     cli_parser.add_argument("dam", type=str, help="Dam name")
@@ -235,6 +295,9 @@ def main():
     if args.command == "json":
         print(f'Processing {args.json_file}')
         process_json_input(args.json_file)
+    elif args.command == "excel":
+        print(f'Processing {args.excel_file}')
+        process_excel_input(args.excel_file)
     elif args.command == "cli":
         process_cli_arguments(args)
 
