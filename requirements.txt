@@ -2,9 +2,9 @@ pandas~=2.3.3
 geopandas~=1.1.1
 requests~=2.32.5
 laspy~=2.6.1
-numpy~=2.2.6
+numpy<2.0
 scipy~=1.15.2
-pyproj~=3.7.1
+pyproj~=3.6.1
 rasterio~=1.4.3
 python-dateutil~=2.9.0.post0
 xarray~=2025.6.1
@@ -16,4 +16,3 @@ shapely~=2.1.2
 s3fs~=2025.10.0
 contextily~=1.6.2
 hsclient~=1.1.6
-rathcelon~=0.1.0

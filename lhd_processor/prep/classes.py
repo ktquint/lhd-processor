@@ -334,6 +334,9 @@ class LowHeadDam:
         # Ensure sources are updated in the dictionary so they get saved to DB
         self.site_data['flowline_source'] = self.flowline_source
         self.site_data['streamflow_source'] = self.streamflow_source
+        
+        # Ensure land raster path is saved
+        self.site_data['land_raster'] = self.land_cover_path
 
         self.db.update_site_data(self.site_id, self.site_data)
 

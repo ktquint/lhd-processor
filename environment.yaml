@@ -19,11 +19,10 @@ dependencies:
   - scipy
   - openpyxl
   - gdal
-  - laspy
   - contextily
   - dask
   - distributed
-  - pyproj
+  - pyproj=3.6.1
   - fiona
   - shapely
   - s3fs
@@ -36,6 +35,7 @@ dependencies:
     - pyarrow
     - matplotlib_scalebar
     - hsclient
+    - laspy
     - lazrs
     - pynhd
     - py3dep

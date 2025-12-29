@@ -443,10 +443,39 @@ def _download_esa_land_cover(geom, output_dir, dem_crs, year=2021):
     for tile in tiles.ll_tile:
         url = f"https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/{year}/map/ESA_WorldCover_10m_{year}_v200_{tile}_Map.tif"
         path = os.path.join(output_dir, os.path.basename(url))
+        
+        # Validate existing file
+        if os.path.exists(path):
+            try:
+                with rasterio.open(path) as src:
+                    pass
+            except Exception:
+                print(f"Removing corrupted file: {path}")
+                os.remove(path)
+
         if not os.path.exists(path):
-            with open(path, 'wb') as f: f.write(requests.get(url).content)
-        downloaded.append(path)
+            print(f"Downloading {url}...")
+            try:
+                resp = requests.get(url, stream=True)
+                if resp.status_code == 200:
+                    with open(path, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                else:
+                    print(f"Failed to download {url}: Status {resp.status_code}")
+            except Exception as e:
+                print(f"Download error for {url}: {e}")
+
+        if os.path.exists(path):
+            downloaded.append(path)
+
+    if not downloaded:
+        return None
 
     merged_path = os.path.join(output_dir, "merged_esa.tif")
-    gdal.Warp(merged_path, downloaded, options=gdal.WarpOptions(format='GTiff', creationOptions=['COMPRESS=LZW']))
-    return merged_path
+    try:
+        gdal.Warp(merged_path, downloaded, options=gdal.WarpOptions(format='GTiff', creationOptions=['COMPRESS=LZW']))
+        return merged_path
+    except Exception as e:
+        print(f"Error merging ESA tiles: {e}")
+        return None

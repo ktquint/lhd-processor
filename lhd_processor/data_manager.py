@@ -25,7 +25,7 @@ class DatabaseManager:
             'baseflow_nwm', 'baseflow_geo',
             'P_known', 'output_dir',
             'baseflow_method', 'lidar_date', 'dem_source_info',
-            'land_esa'
+            'land_raster'
         ]
 
         self.incidents_schema = ['site_id', 'date', 'flow_nwm', 'flow_geo']
