@@ -363,16 +363,21 @@ def threaded_prepare_data():
                     print(f"Error in flowline worker: {e}")
 
         # --- STAGE 2: BATCH STREAMFLOW (Cloud Extraction) ---
-        utils.set_status("Stage 2/4: Running Condense Zarr for all identified IDs...")
-        
-        # Use the internal function instead of external script
-        nwm_zarr = os.path.join(package_root, 'data', 'nwm_v3_daily_retrospective.zarr')
-        if all_comids:
-            condense_zarr(list(all_comids), nwm_zarr)
+        # Only run condense_zarr if using National Water Model
+        if streamflow_source == 'National Water Model':
+            utils.set_status("Stage 2/4: Running Condense Zarr for all identified IDs...")
+            
+            # Use the internal function instead of external script
+            nwm_zarr = os.path.join(package_root, 'data', 'nwm_v3_daily_retrospective.zarr')
+            if all_comids:
+                condense_zarr(list(all_comids), nwm_zarr)
+            else:
+                utils.set_status("No COMIDs found to extract streamflow for.")
         else:
-            utils.set_status("No COMIDs found to extract streamflow for.")
+            utils.set_status("Stage 2/4: Skipping Zarr condensation (GEOGLOWS selected).")
+            nwm_zarr = None # Ensure variable is defined
 
-        # --- STAGE 3: REANALYSIS (Moved Up) ---
+        # --- STAGE 3: REANALYSIS ---
         # Calculate stats NOW so they are available for Stage 4
         reanalysis_df = None
         if all_comids:
@@ -381,7 +386,7 @@ def threaded_prepare_data():
             # But we can re-run or update it later if needed. 
             # Actually, create_reanalysis_file returns nothing, it saves to CSV.
             # Let's modify it to return the DF or read it back.
-            create_reanalysis_file(list(all_comids), results_folder, streamflow_source, package_root, comid_date_map=None, db_manager=db)
+            create_reanalysis_file(list(all_comids), streamflow_source, package_root, comid_date_map=None, db_manager=db)
             
             # Determine filename based on source
             filename = "nwm_reanalysis.csv" if streamflow_source == 'National Water Model' else "geoglows_reanalysis.csv"
@@ -427,7 +432,7 @@ def threaded_prepare_data():
         # If we found new LiDAR dates, we might want to update the "known_baseflow" column in the reanalysis file
         if all_comids and comid_date_map:
              utils.set_status("Updating reanalysis with found LiDAR dates...")
-             create_reanalysis_file(list(all_comids), results_folder, streamflow_source, package_root, comid_date_map, db_manager=db)
+             create_reanalysis_file(list(all_comids), streamflow_source, package_root, comid_date_map, db_manager=db)
 
         # --- FINALIZATION ---
         utils.set_status("Saving database and creating RathCelon input file...")

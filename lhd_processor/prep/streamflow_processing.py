@@ -3,9 +3,10 @@ import s3fs
 import pandas as pd
 import numpy as np
 import xarray as xr
+import geoglows as geo
 from dask.diagnostics import ProgressBar
 
-def create_reanalysis_file(comid_list, output_folder, source, package_root, comid_date_map=None, db_manager=None):
+def create_reanalysis_file(comid_list, source, package_root, comid_date_map=None, db_manager=None):
     """
     Generates a reanalysis CSV with flow statistics for the given COMIDs.
     Optionally updates the database with the found baseflow values.
@@ -161,9 +162,74 @@ def create_reanalysis_file(comid_list, output_folder, source, package_root, comi
             stats_list.append(row)
 
     elif source == 'GEOGLOWS':
-        # Placeholder for GEOGLOWS logic if needed
-        print("Reanalysis for GEOGLOWS not yet implemented.")
-        pass
+        print(f"Fetching GEOGLOWS data for {len(comid_list)} reaches...")
+
+        for comid in comid_list:
+            try:
+                # 1. Fetch Retrospective Data (Daily)
+                df = geo.data.retrospective(river_id=int(comid))
+
+                if df.empty:
+                    print(f"Warning: No GEOGLOWS data for ID {comid}")
+                    continue
+
+                df.index = pd.to_datetime(df.index)
+                flow_col = df.columns[0]
+
+                # 2. Calculate Basic Stats
+                q_median = df[flow_col].median()
+                q_max = df[flow_col].max()
+
+                # 3. Known Baseflow Logic
+                known_baseflow = q_median
+                if comid_date_map:
+                    target_date = comid_date_map.get(int(comid))
+                    if target_date:
+                        try:
+                            val = df.loc[target_date]
+                            if isinstance(val, pd.Series):
+                                known_baseflow = val.mean()
+                            else:
+                                known_baseflow = val[flow_col]
+                        except KeyError:
+                            pass
+
+                # 4. Return Periods using GEOGLOWS API
+                # Update: Handling index-based return periods (2, 5, 10, 25, 50, 100)
+                rp_df = geo.data.return_periods(river_id=int(comid))
+
+                # Ensure the return_period is the index (in case it comes back as a column)
+                if 'return_period' in rp_df.columns:
+                    rp_df = rp_df.set_index('return_period')
+
+                # The first column contains the flow values (named after the ID)
+                flow_values = rp_df.iloc[:, 0]
+
+                rp_flows = {}
+                target_rps = [2, 5, 10, 25, 50, 100]
+
+                for rp in target_rps:
+                    try:
+                        # Look up by the index value (e.g., rp_df.loc[2])
+                        rp_flows[f'rp{rp}'] = float(flow_values.loc[rp])
+                    except KeyError:
+                        rp_flows[f'rp{rp}'] = 0.0
+
+                # 5. Build Row
+                row = {
+                    'comid': int(comid),
+                    'known_baseflow': known_baseflow,
+                    'qout_median': q_median,
+                    'qout_max': q_max,
+                    # Premium logic: 1.5 times the base value
+                    'qout_max_premium': q_max * 1.5,
+                    'rp100_premium': rp_flows.get('rp100', 0) * 1.5
+                }
+                row.update(rp_flows)
+                stats_list.append(row)
+
+            except Exception as e:
+                print(f"Error processing GEOGLOWS ID {comid}: {e}")
 
     if stats_list:
         out_df = pd.DataFrame(stats_list)

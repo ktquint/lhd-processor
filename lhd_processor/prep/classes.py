@@ -80,8 +80,15 @@ class LowHeadDam:
                     start_date=date,
                     end_date=date
                 )
-                val = float(df.iloc[0, 0]) if not df.empty else None
-                return val
+                # geoglows returns a dataframe with datetime index
+                # If date is 'YYYY-MM-DD', it might return one or more rows (if hourly)
+                # But retrospective is usually daily or hourly.
+                # Let's assume daily for now or take mean if multiple
+                if not df.empty:
+                    # The column name varies, so take the first column
+                    val = float(df.iloc[:, 0].mean())
+                    return val
+                return None
             except Exception as e:
                 print(f"GEOGLOWS API Error (Dam {self.site_id}): {e}")
                 return 0.0
@@ -120,8 +127,14 @@ class LowHeadDam:
         source = source or self.streamflow_source
 
         if source == 'GEOGLOWS' and self.geoglows_id:
-            df = geoglows.data.retrospective(river_id=int(self.geoglows_id))
-            return float(df.median().iloc[0])
+            try:
+                df = geoglows.data.retrospective(river_id=int(self.geoglows_id))
+                if not df.empty:
+                    return float(df.iloc[:, 0].median())
+                return 0.0
+            except Exception as e:
+                print(f"GEOGLOWS Median Error (Dam {self.site_id}): {e}")
+                return 0.0
 
         elif source == 'National Water Model' and self.nwm_id:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -299,7 +312,7 @@ class LowHeadDam:
                     path_tdx = None
 
             if not path_tdx:
-                path_tdx, gdf = download_tdx_flowline(self.latitude, self.longitude, flowline_dir, vpu_gpkg)
+                path_tdx, gdf = download_tdx_flowline(self.latitude, self.longitude, flowline_dir, vpu_gpkg, site_id=self.site_id)
 
             if path_tdx:
                 self.site_data['flowline_path_tdx'] = path_tdx

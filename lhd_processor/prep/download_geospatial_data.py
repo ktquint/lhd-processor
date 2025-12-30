@@ -114,21 +114,73 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
     return output_path, combined_gdf
 
 
-def navigate_tdx_network(dam_point: Point, gpkg_path: str, distance_km: float = 2.0):
+def navigate_tdx_network(dam_point: Point, gpkg_path: str, distance_km: float = 2.0, site_id=None):
     """
         Navigates GEOGLOWS (TDX-Hydro) network using LengthGeodesicMeters.
         At junctions, it follows the main stem (highest strmOrder).
     """
-    streams = gpd.read_file(gpkg_path, bbox=dam_point.buffer(0.1))
+    # 1. Determine CRS and Buffer Size
+    try:
+        # Read metadata to check CRS (reading 1 row is usually sufficient and fast)
+        meta = gpd.read_file(gpkg_path, rows=1)
+        file_crs = meta.crs
+    except Exception as e:
+        print(f"Error reading VPU file {gpkg_path} for Site {site_id}: {e}")
+        return None, -1
+
+    # Default settings (assuming EPSG:4326)
+    search_point = dam_point
+    buffer_size = 0.005  # ~500m in degrees
+
+    if file_crs:
+        # Adjust buffer size based on CRS type
+        if file_crs.is_projected:
+            buffer_size = 500.0  # 500m in projected units
+        
+        # Reproject dam_point (assumed EPSG:4326) to file CRS if needed
+        try:
+            transformer = Transformer.from_crs("EPSG:4326", file_crs, always_xy=True)
+            search_point = transform(transformer.transform, dam_point)
+        except Exception as e:
+            print(f"Warning: CRS transformation failed ({e}). Using original point.")
+
+    # Create search area
+    search_area = search_point.buffer(buffer_size)
+
+    try:
+        streams = gpd.read_file(gpkg_path, bbox=search_area)
+    except Exception as e:
+        print(f"Error reading VPU file {gpkg_path} for Site {site_id}: {e}")
+        return None, -1
 
     if streams.empty:
-        print("No streams found in VPU file near dam location.")
-        return gpd.GeoDataFrame(), -1
+        print(f"No streams found in VPU file near dam location. File: {gpkg_path}, Site: {site_id}")
+        return None, -1
 
-    # 1. Find the starting reach
-    nearest_idx = streams.sindex.nearest(dam_point, return_all=False)[1]
-    start_reach = streams.iloc[nearest_idx]
-    start_id = start_reach['LINKNO']
+    # Check for active geometry to avoid "active geometry column to use has not been set" error
+    try:
+        if streams.geometry is None:
+             raise AttributeError
+    except AttributeError:
+        print(f"No active geometry column in streams file. File: {gpkg_path}, Site: {site_id}")
+        return None, -1
+
+    # 2. Find the starting reach
+    try:
+        # Use search_point (which matches streams CRS) for nearest neighbor
+        nearest_idx = streams.sindex.nearest(search_point, return_all=False)[1]
+        
+        # Handle potential Series return from nearest() if multiple indices are returned
+        if isinstance(nearest_idx, pd.Series):
+             nearest_idx = nearest_idx.iloc[0]
+        elif isinstance(nearest_idx, (np.ndarray, list)):
+             nearest_idx = nearest_idx[0]
+
+        start_reach = streams.iloc[nearest_idx]
+        start_id = start_reach['LINKNO']
+    except Exception as e:
+        print(f"Error finding nearest stream: {e}")
+        return None, -1
 
     threshold_m = distance_km * 1000.0
 
@@ -172,20 +224,29 @@ def navigate_tdx_network(dam_point: Point, gpkg_path: str, distance_km: float = 
 
         return found_reaches
 
-    # 2. Execute and Combine
+    # 3. Execute and Combine
     ds = trace_network(start_id, direction='downstream')
     us = trace_network(start_id, direction='upstream')
 
-    combined = pd.concat(ds + us).drop_duplicates(subset='LINKNO')
+    combined_list = ds + us
+    if not combined_list:
+        return None, -1
+
+    combined = pd.concat(combined_list).drop_duplicates(subset='LINKNO')
     return gpd.GeoDataFrame(combined, crs=streams.crs), start_id
 
 
-def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, vpu_map_path: str):
+def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, vpu_map_path: str, site_id=None):
     """
         Downloads GEOGLOWS/TDX-Hydro flowlines based on VPU boundaries.
     """
     # 1. read in the vpu map to figure out which vpu flowlines to download
-    vpu_gdf = gpd.read_file(vpu_map_path)
+    try:
+        vpu_gdf = gpd.read_file(vpu_map_path)
+    except Exception as e:
+        print(f"Error reading VPU map {vpu_map_path}: {e}")
+        return None, None
+
     if vpu_gdf.crs.to_epsg() != 4326:
         vpu_gdf = vpu_gdf.to_crs(epsg=4326)
 
@@ -200,18 +261,29 @@ def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, 
     # 3. download the streams_vpu.gpkg
     flowline_vpu = os.path.join(flowline_dir, f"streams_{vpu_code}.gpkg")
     if not os.path.exists(flowline_vpu):
-        fs = s3fs.S3FileSystem(anon=True)
-        s3_path = f"geoglows-v2/hydrography/vpu={vpu_code}/streams_{vpu_code}.gpkg"
-        with fs.open(s3_path, 'rb') as f_in, open(flowline_vpu, 'wb') as f_out:
-            f_out.write(f_in.read())
+        try:
+            fs = s3fs.S3FileSystem(anon=True)
+            s3_path = f"geoglows-v2/hydrography/vpu={vpu_code}/streams_{vpu_code}.gpkg"
+            with fs.open(s3_path, 'rb') as f_in, open(flowline_vpu, 'wb') as f_out:
+                f_out.write(f_in.read())
+        except Exception as e:
+            print(f"Error downloading VPU {vpu_code}: {e}")
+            return None, None
 
-    flowline_gdf, linkno = navigate_tdx_network(dam_point, flowline_vpu)
+    flowline_gdf, linkno = navigate_tdx_network(dam_point, flowline_vpu, site_id=site_id)
     
+    if flowline_gdf is None or flowline_gdf.empty:
+        return None, None
+
     output_path = os.path.join(flowline_dir, f"tdx_flowline_{linkno}.gpkg")
 
     if not os.path.exists(output_path):
-        flowline_gdf.to_file(output_path, driver="GPKG", layer="TDXFlowline")
-        print(f"Flowlines saved to: {output_path}")
+        try:
+            flowline_gdf.to_file(output_path, driver="GPKG", layer="TDXFlowline")
+            print(f"Flowlines saved to: {output_path}")
+        except Exception as e:
+            print(f"Error saving flowline to {output_path}: {e}")
+            return None, None
 
     return output_path, flowline_gdf
 
