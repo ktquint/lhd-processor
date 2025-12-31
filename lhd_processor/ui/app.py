@@ -136,7 +136,7 @@ def main():
                 "strm_dir": prep_tab.strm_entry.get(),
                 "land_dir": prep_tab.land_use_entry.get(),
                 "results_dir": prep_tab.results_entry.get(),
-                "json_path": prep_tab.json_entry.get(),
+                "rath_xlsx": prep_tab.rath_xlsx_entry.get(),
 
                 # Prep Tab - Dropdowns
                 "flowline_source": prep_tab.flowline_var.get(),
@@ -182,7 +182,7 @@ def main():
             set_entry(prep_tab.strm_entry, "strm_dir")
             set_entry(prep_tab.land_use_entry, "land_dir")
             set_entry(prep_tab.results_entry, "results_dir")
-            set_entry(prep_tab.json_entry, "json_path")
+            set_entry(prep_tab.rath_xlsx_entry, "rath_xlsx")
 
             set_var(prep_tab.flowline_var, "flowline_source")
             set_var(prep_tab.dd_var, "dem_res")
