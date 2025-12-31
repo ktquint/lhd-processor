@@ -186,6 +186,10 @@ def process_excel_input(excel_file):
         output_dir = safe_normpath(dam.get("output_dir"))
         land_raster = safe_normpath(dam.get("land_raster"))
 
+        # If dam_csv is not provided in the row, use the input excel_file itself
+        if not dam_csv:
+            dam_csv = safe_normpath(excel_file)
+
         dam_dict = {
             "name": dam_name,
             "dam_csv": dam_csv,
@@ -288,7 +292,7 @@ def main():
     cli_parser.add_argument("--known_baseflow", type=float, default=None, help="Known baseflow value")
     cli_parser.add_argument("--known_channel_forming_discharge", type=float, default=None, help="Known channel forming discharge value")
     cli_parser.add_argument("--upstream_elevation_change_threshold", type=float, help="The upstream elevation change used to identify the appropriate upstream cross-section, default is 1.0 meters", default=1.0)
-    cli_parser.add_argument("--streamflow", type=str, default=None, help="Path to a local .gpkg or .parquet file containing streamflow data")
+    cli_parser.add_argument("--streamflow", type=str, default=None, help="Path to a local .gpkg, .parquet, or .csv file containing streamflow data")
 
     args = parser.parse_args()
 

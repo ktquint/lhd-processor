@@ -1004,7 +1004,7 @@ class RathCelonDam:
             print('You want to pair known_baseflow with bathy_use_banks set to False.')
             sys.exit("Terminating: Invalid input combination.")
 
-        self._create_arc_input_txt("comid", Q_bf_param, 'rp2')
+        self._create_arc_input_txt("COMID", Q_bf_param, 'rp2')
 
     def process_dam(self):
         # Folder Management

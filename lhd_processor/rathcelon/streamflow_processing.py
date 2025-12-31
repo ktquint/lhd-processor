@@ -450,6 +450,64 @@ def Process_and_Write_Retrospective_Data_for_Dam(dam: RathCelonDam):
     -------
 
     """
+    # Check if streamflow input is a CSV (User provided reanalysis file)
+    if dam.streamflow and str(dam.streamflow).endswith('.csv') and os.path.exists(dam.streamflow):
+        print(f"Using provided reanalysis CSV: {dam.streamflow}")
+
+        # Read the CSV
+        reanalysis_df = pd.read_csv(dam.streamflow)
+
+        # Identify the ID column
+        id_col = None
+        # Prioritize 'COMID' as it is the standard for this project
+        possible_cols = ['COMID', 'river_id', 'LINKNO', 'hydroseq', 'comid', dam.rivid_field]
+
+        for col in possible_cols:
+            if col in reanalysis_df.columns:
+                id_col = col
+                break
+
+        if id_col is None:
+            raise ValueError(f"Could not find a valid ID column in {dam.streamflow}. Expected one of {possible_cols}")
+
+        print(f"Found ID column: {id_col}")
+
+        # Get unique IDs
+        rivids = reanalysis_df[id_col].unique()
+
+        # Ensure types match for filtering
+        try:
+            rivids_int = rivids.astype(int)
+            dam.flowline_gdf[dam.rivid_field] = dam.flowline_gdf[dam.rivid_field].astype(int)
+
+            # Filter
+            StrmShp_filtered_gdf = dam.flowline_gdf[dam.flowline_gdf[dam.rivid_field].isin(rivids_int)]
+            rivids_list = rivids_int.tolist()
+        except Exception as e:
+            print(f"Warning: Could not cast IDs to int for filtering: {e}. Trying direct comparison.")
+            StrmShp_filtered_gdf = dam.flowline_gdf[dam.flowline_gdf[dam.rivid_field].isin(rivids)]
+            rivids_list = rivids.tolist()
+
+        if StrmShp_filtered_gdf.empty:
+            raise ValueError(f"No matching flowlines found for IDs in {dam.streamflow} using field {dam.rivid_field}")
+
+        print(f"Filtered {len(StrmShp_filtered_gdf)} stream segments.")
+
+        # Save the shapefile
+        StrmShp_filtered_gdf.to_file(dam.dam_shp)
+
+        # Prepare and save the reanalysis CSV
+        # Ensure 'COMID' column exists
+        if 'COMID' not in reanalysis_df.columns:
+            reanalysis_df['COMID'] = reanalysis_df[id_col]
+
+        # Filter the reanalysis dataframe to only include the matching COMIDs
+        reanalysis_df = reanalysis_df[reanalysis_df[id_col].isin(rivids_list)]
+
+        reanalysis_df.to_csv(dam.reanalysis_csv, index=False)
+
+        return rivids_list, StrmShp_filtered_gdf
+
     # Load the dam data in as a geodataframe
     print('Process_and_Write_Retrospective_Data_for_Dam: Load the dam data in as a geodataframe')
     dam_gdf = pd.read_csv(dam.csv_path)
