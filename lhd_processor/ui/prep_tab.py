@@ -299,7 +299,7 @@ def threaded_run_rathcelon():
         count_to_run = len(dams)
 
         total_cores = os.cpu_count() or 1
-        worker_count = max(1, int(total_cores / 2))
+        worker_count = max(1, int(total_cores / 3))
 
         utils.set_status(f"Initializing Dask Workers ({worker_count}) for {count_to_run} dams...")
 

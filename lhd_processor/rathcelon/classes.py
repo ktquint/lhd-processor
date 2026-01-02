@@ -1,8 +1,5 @@
 # build-in imports
 import os
-import sys
-import stat
-import platform
 from pathlib import Path
 
 # third-party imports
@@ -14,16 +11,14 @@ try:
 except ImportError:
     from osgeo import gdal, ogr, osr, gdal_array
 
-import fiona
 import rasterio
 import numpy as np
 import pandas as pd
-import networkx as nx
 import geopandas as gpd
-from shapely.geometry import box, shape, Point, LineString, MultiLineString
-from pyproj import CRS, Geod, Transformer
-from shapely.ops import nearest_points, linemerge, transform
+from shapely.ops import linemerge
+from pyproj import CRS, Transformer
 from rasterio.features import rasterize
+from shapely.geometry import Point, LineString
 
 
 # --- GEOSPATIAL UTILITIES ---
@@ -98,7 +93,9 @@ def clean_strm_raster(strm_tif: str, clean_strm_tif: str) -> None:
 
 
 def create_arc_strm_raster(StrmSHP, output_raster_path, DEM_File, value_field):
-    """Rasterizes a shapefile to match the extent and resolution of a DEM."""
+    """
+        Rasterizes a shapefile to match the extent and resolution of a DEM.
+    """
     gdf = gpd.read_file(StrmSHP)
     with rasterio.open(DEM_File) as ref:
         meta, ref_transform, out_shape, crs = ref.meta.copy(), ref.transform, (ref.height, ref.width), ref.crs
@@ -175,7 +172,7 @@ class RathCelonDam:
 
         # ARC specific defaults
         self.create_reach_average_curve_file = 'False'
-        self.bathy_use_banks = 'True'
+        self.bathy_use_banks = 'False'
         self.find_banks_based_on_landcover = 'True'
 
         if self.flowline_source == 'TDX-Hydro':
@@ -197,7 +194,7 @@ class RathCelonDam:
         else:
             self.streamflow = data_dir / 'nwm_reanalysis.csv'
 
-    def _create_arc_input_txt(self, comid, Q_baseflow, Q_max):
+    def _create_arc_input_txt(self, Q_baseflow, Q_max):
         """Full implementation of ARC input generation with all original parameters."""
         x_section_dist = int(10 * self.weir_length)
 
@@ -208,7 +205,7 @@ class RathCelonDam:
             out_file.write(f'LU_Raster_SameRes\t{self.land_tif}\n')
             out_file.write(f'LU_Manning_n\t{self.manning_n_txt}\n')
             out_file.write(f'Flow_File\t{self.streamflow}\n')
-            out_file.write(f'Flow_File_ID\t{comid}\n')
+            out_file.write(f'Flow_File_ID\tcomid\n')
             out_file.write(f'Flow_File_BF\t{Q_baseflow}\n')
             out_file.write(f'Flow_File_QMax\t{Q_max}\n')
             out_file.write(f'Spatial_Units\tdeg\n')
@@ -272,12 +269,17 @@ class RathCelonDam:
         target_points.append(merged_geom.interpolate(us_dist))
 
         minx, miny, maxx, maxy, dx, dy, _, _, _, proj_wkt = get_raster_info(self.dem_tif)
+        dem_crs = CRS.from_wkt(proj_wkt)
+
+        # Transform points to DEM CRS for pixel lookup
+        transformer_to_dem = Transformer.from_crs(projected_crs, dem_crs, always_xy=True)
+        target_points_dem = [Point(transformer_to_dem.transform(pt.x, pt.y)) for pt in target_points]
 
         def pt_to_rc(pt):
             return int((maxy - pt.y) / abs(dy)), int((pt.x - minx) / dx)
 
         final_indices = []
-        for pt in target_points:
+        for pt in target_points_dem:
             r, c = pt_to_rc(pt)
             curve_data_df['d_pix'] = np.sqrt((curve_data_df['Row'] - r) ** 2 + (curve_data_df['Col'] - c) ** 2)
             final_indices.append(curve_data_df['d_pix'].idxmin())
@@ -289,9 +291,11 @@ class RathCelonDam:
         x_base, y_base = float(minx) + 0.5 * dx, float(maxy) - 0.5 * abs(dy)
         extracted_curve['X'] = x_base + extracted_curve['Col'] * dx
         extracted_curve['Y'] = y_base - extracted_curve['Row'] * abs(dy)
-        transformer = Transformer.from_crs(projected_crs, "EPSG:4326", always_xy=True)
+        
+        # Transform back to WGS84 for output, using DEM CRS as source
+        transformer_to_wgs = Transformer.from_crs(dem_crs, "EPSG:4326", always_xy=True)
         extracted_curve[['Lon', 'Lat']] = extracted_curve.apply(
-            lambda r: pd.Series(transformer.transform(r['X'], r['Y'])), axis=1)
+            lambda r: pd.Series(transformer_to_wgs.transform(r['X'], r['Y'])), axis=1)
         self.curve_data_gdf = gpd.GeoDataFrame(extracted_curve,
                                                geometry=gpd.points_from_xy(extracted_curve.Lon, extracted_curve.Lat),
                                                crs="EPSG:4326")
@@ -339,7 +343,7 @@ class RathCelonDam:
 
             if not os.path.exists(self.bathy_tif):
                 print("    Running ARC simulation...")
-                self._create_arc_input_txt(self.rivid_field, "known_baseflow", "rp100")
+                self._create_arc_input_txt("known_baseflow", "rp100")
                 arc_runner = Arc(self.arc_input, quiet=False)
                 try:
                     arc_runner.set_log_level('info')
