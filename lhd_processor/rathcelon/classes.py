@@ -26,6 +26,7 @@ from shapely.ops import nearest_points, linemerge, transform
 from rasterio.features import rasterize
 
 
+# --- GEOSPATIAL UTILITIES ---
 
 def get_raster_info(dem_tif: str):
     """Retrieves the geographic details and projection of a raster."""
@@ -86,12 +87,10 @@ def clean_strm_raster(strm_tif: str, clean_strm_tif: str) -> None:
         for x in range(num_nonzero):
             r, c = RR[x], CC[x]
             if B[r, c] > 0:
-                # Remove single hanging cells
                 if B[r, c + 1] == 0 and B[r, c - 1] == 0:
                     if (B[r + 1, c - 1:c + 2].sum() == 0 and B[r - 1, c] > 0) or \
                             (B[r - 1, c - 1:c + 2].sum() == 0 and B[r + 1, c] > 0):
                         B[r, c] = 0
-                # Remove redundant thick cells
                 elif B[r + 1, c] == B[r, c] and (B[r + 1, c + 1] == B[r, c] or B[r + 1, c - 1] == B[r, c]):
                     if sum(B[r + 1, c - 1:c + 2]) == B[r, c] * 2:
                         B[r + 1, c] = 0
@@ -110,106 +109,247 @@ def create_arc_strm_raster(StrmSHP, output_raster_path, DEM_File, value_field):
     with rasterio.open(output_raster_path, 'w', **meta) as dst: dst.write(raster, 1)
 
 
+def create_mannings_esa(manning_txt):
+    """Writes standard Manning's n look-up table for ESA WorldCover."""
+    with open(manning_txt, 'w') as f:
+        f.write('LC_ID\tDescription\tManning_n\n')
+        f.write(
+            '10\tTree Cover\t0.120\n20\tShrubland\t0.070\n30\tGrassland\t0.035\n40\tCropland\t0.035\n50\tBuilt-up\t0.150\n')
+        f.write(
+            '60\tBare / Sparse Vegetation\t0.040\n70\tSnow and Ice\t0.025\n80\tPermanent Water Bodies\t0.045\n90\tHerbaceous Wetland\t0.100\n')
+        f.write('95\tMangroves\t0.150\n100\tMoss and Lichen\t0.040\n')
+
+
+def move_upstream(point, current_link, distance, G):
+    """Walks a fixed distance upstream through a directed graph network."""
+    remaining = distance
+    curr_pt = point
+    link = current_link
+    while remaining > 0:
+        if link not in G.nodes: return curr_pt, link
+        seg_geom = None
+        in_edges = list(G.in_edges(link, data=True))
+        if in_edges: seg_geom = in_edges[0][2].get('geometry')
+        if not seg_geom: return curr_pt, link
+        if hasattr(seg_geom, 'geom_type') and seg_geom.geom_type.startswith("Multi"):
+            merged = linemerge(seg_geom)
+            seg_line = merged if merged.geom_type == 'LineString' else max(merged.geoms, key=lambda g: g.length)
+        else:
+            seg_line = seg_geom
+        proj = seg_line.project(curr_pt)
+        available = proj
+        if available >= remaining:
+            new_pt = seg_line.interpolate(proj - remaining)
+            remaining = 0
+        else:
+            remaining -= available
+            new_pt = Point(seg_line.coords[0])
+            ups = list(G.in_edges(link))
+            if not ups: return new_pt, link
+            link = ups[0][0]
+        curr_pt = new_pt
+    return curr_pt, link
+
+
 class RathCelonDam:
     def __init__(self, dam_row: dict):
         """Initializes dam processing using a row from the Excel database."""
 
-        def safe_p(p): return Path(p) if pd.notna(p) and p != "" else None
+        def safe_p(p):
+            return Path(p) if pd.notna(p) and p != "" else None
 
         self.dam_row = dam_row
         self.name = dam_row.get('name')
-
-        # Assumption: First column of the Excel row is the Dam ID
         self.id_field = list(dam_row.keys())[0]
         self.dam_id = int(dam_row.get(self.id_field))
 
-        # Physical and Path specs
-        self.weir_length = dam_row.get('weir_length')
+        self.weir_length = dam_row.get('weir_length', 30)
+        self.latitude = dam_row.get('latitude')
+        self.longitude = dam_row.get('longitude')
         self.dem_dir = safe_p(dam_row.get('dem_dir'))
         self.output_dir = safe_p(dam_row.get('output_dir'))
         self.land_raster = safe_p(dam_row.get('land_raster'))
 
-        # --- DYNAMIC SOURCE SELECTION ---
         self.flowline_source = dam_row.get('flowline_source', 'NHDPlus')
         self.streamflow_source = dam_row.get('streamflow_source', 'National Water Model')
 
-        # 1. Select Flowline Path & ID Field
+        # ARC specific defaults
+        self.create_reach_average_curve_file = 'False'
+        self.bathy_use_banks = 'True'
+        self.find_banks_based_on_landcover = 'True'
+
         if self.flowline_source == 'TDX-Hydro':
             self.flowline = safe_p(dam_row.get('flowline_path_tdx'))
             self.rivid_field = 'LINKNO'
         else:
-            # Default to NHDPlus
             self.flowline = safe_p(dam_row.get('flowline_path_nhd'))
             self.rivid_field = 'nhdplusid'
 
-        # Fallback if specific columns are empty but generic 'flowline' exists
-        if not self.flowline:
-            self.flowline = safe_p(dam_row.get('flowline'))
-            if self.flowline:
-                # Try to guess ID field from path name or default to NHD
-                if 'TDX' in str(self.flowline) or 'tdx' in str(self.flowline):
-                    self.rivid_field = 'LINKNO'
-                else:
-                    self.rivid_field = 'nhdplusid'
-
-        # 2. Select Streamflow Reanalysis File
-        # We assume the reanalysis files are in the package 'data' directory
         package_root = Path(__file__).resolve().parent.parent
         data_dir = package_root / 'data'
 
-        if self.streamflow_source == 'GEOGLOWS':
+        if self.streamflow_source == 'GEOGLOWS' and self.flowline_source == 'TDX-Hydro':
             self.streamflow = data_dir / 'geoglows_reanalysis.csv'
+        elif self.streamflow_source == 'GEOGLOWS' and self.flowline_source == 'NHDPlus':
+            self.streamflow = data_dir / 'geoglows_to_nhd_reanalysis.csv'
+        elif self.streamflow_source == 'National Water Model' and self.flowline_source == 'TDX-Hydro':
+            self.streamflow = data_dir / 'nwm_to_geoglows_reanalysis.csv'
         else:
             self.streamflow = data_dir / 'nwm_reanalysis.csv'
 
-        # Allow override if 'streamflow' column points to a valid file
-        custom_sf = safe_p(dam_row.get('streamflow'))
-        if custom_sf and custom_sf.exists() and custom_sf.is_file():
-            self.streamflow = custom_sf
+    def _create_arc_input_txt(self, comid, Q_baseflow, Q_max):
+        """Full implementation of ARC input generation with all original parameters."""
+        x_section_dist = int(10 * self.weir_length)
 
-    def _create_arc_input_txt(self, q_bf_col, q_max_col):
-        """Generates the ARC input text file pointing to the Master database."""
-        x_dist = int(10 * self.weir_length)
-        with open(self.arc_input, 'w') as f:
-            f.write('#ARC_Inputs\n')
-            f.write(f'DEM_File\t{self.dem_tif}\n')
-            f.write(f'Stream_File\t{self.strm_tif_clean}\n')
-            f.write(f'LU_Raster_SameRes\t{self.land_tif}\n')
-            f.write(f'Flow_File\t{self.streamflow}\n')
-            f.write(f'Flow_File_ID\t{self.rivid_field}\n')
-            f.write(f'Flow_File_BF\t{q_bf_col}\n')
-            f.write(f'Flow_File_QMax\t{q_max_col}\n')
-            f.write(f'X_Section_Dist\t{x_dist}\n')
-            f.write(f'BATHY_Out_File\t{self.bathy_tif}\n')
-            f.write(f'XS_Out_File\t{self.xs_txt}\n')
+        with open(self.arc_input, 'w') as out_file:
+            out_file.write('#ARC_Inputs\n')
+            out_file.write(f'DEM_File\t{self.dem_tif}\n')
+            out_file.write(f'Stream_File\t{self.strm_tif_clean}\n')
+            out_file.write(f'LU_Raster_SameRes\t{self.land_tif}\n')
+            out_file.write(f'LU_Manning_n\t{self.manning_n_txt}\n')
+            out_file.write(f'Flow_File\t{self.streamflow}\n')
+            out_file.write(f'Flow_File_ID\t{comid}\n')
+            out_file.write(f'Flow_File_BF\t{Q_baseflow}\n')
+            out_file.write(f'Flow_File_QMax\t{Q_max}\n')
+            out_file.write(f'Spatial_Units\tdeg\n')
+            out_file.write(f'X_Section_Dist\t{x_section_dist}\n')
+            out_file.write(f'Degree_Manip\t6.1\n')
+            out_file.write(f'Degree_Interval\t1.5\n')
+            out_file.write(f'Low_Spot_Range\t2\n')
+            out_file.write(f'Str_Limit_Val\t1\n')
+            out_file.write(f'Gen_Dir_Dist\t10\n')
+            out_file.write(f'Gen_Slope_Dist\t10\n\n')
 
-    def _process_geospatial_data(self):
-        """Prepares rasters without duplicating the CSV database."""
-        self.strm_tif = os.path.join(self.strm_dir, f'{self.dam_id}_STRM.tif')
-        self.strm_tif_clean = self.strm_tif.replace('.tif', '_Clean.tif')
-        self.land_tif = self.land_raster
+            out_file.write('#VDT_Output_File_and_CurveFile\n')
+            out_file.write('VDT_Database_NumIterations\t30\n')
+            out_file.write(f'VDT_Database_File\t{self.vdt_txt}\n')
+            out_file.write(f'Print_VDT_Database\t{self.vdt_txt}\n')
+            out_file.write(f'Print_Curve_File\t{self.curvefile_csv}\n')
+            out_file.write(f'Reach_Average_Curve_File\t{self.create_reach_average_curve_file}\n\n')
 
-        if not os.path.exists(self.strm_tif):
-            create_arc_strm_raster(str(self.flowline), self.strm_tif, self.dem_tif, self.rivid_field)
+            out_file.write('#Bathymetry_Information\n')
+            out_file.write('Bathy_Trap_H\t0.20\n')
+            out_file.write(f'Bathy_Use_Banks\t{self.bathy_use_banks}\n')
+            if self.find_banks_based_on_landcover:
+                out_file.write(f'FindBanksBasedOnLandCover\t{self.find_banks_based_on_landcover}\n')
+            out_file.write(f'AROutBATHY\t{self.bathy_tif}\n')
+            out_file.write(f'BATHY_Out_File\t{self.bathy_tif}\n')
+            out_file.write(f'XS_Out_File\t{self.xs_txt}\n')
 
-        if not os.path.exists(self.strm_tif_clean):
-            clean_strm_raster(self.strm_tif, self.strm_tif_clean)
+    def _find_strm_up_downstream(self):
+        """Extracts the specific hydraulic cross-sections after ARC run."""
+        vdt_df = pd.read_csv(self.vdt_txt, sep='\t')
+        curve_data_df = pd.read_csv(self.curvefile_csv)
 
-        self._create_arc_input_txt("qout_median", "rp100")
+        dam_flowline_gdf = gpd.read_file(self.flowline)
+        projected_crs = dam_flowline_gdf.estimate_utm_crs()
+        dam_flowline_gdf = dam_flowline_gdf.to_crs(projected_crs)
+        dam_point = gpd.GeoSeries([Point(self.longitude, self.latitude)], crs="EPSG:4326").to_crs(projected_crs).iloc[0]
+
+        # Merge flowlines into a single geometry
+        merged_geom = linemerge(dam_flowline_gdf.geometry.tolist())
+
+        # Handle MultiLineString if merge wasn't perfect
+        if merged_geom.geom_type == 'MultiLineString':
+            merged_geom = min(merged_geom.geoms, key=lambda g: g.distance(dam_point))
+
+        # Project dam point onto the line
+        start_dist = merged_geom.project(dam_point)
+
+        target_points = []
+
+        # Downstream points (4 points)
+        for i in range(1, 5):
+            target_dist = start_dist + (i * self.weir_length)
+            if target_dist > merged_geom.length:
+                target_dist = merged_geom.length
+            target_points.append(merged_geom.interpolate(target_dist))
+
+        # Upstream point (1 point)
+        us_dist = start_dist - self.weir_length
+        if us_dist < 0:
+            us_dist = 0
+        target_points.append(merged_geom.interpolate(us_dist))
+
+        minx, miny, maxx, maxy, dx, dy, _, _, _, proj_wkt = get_raster_info(self.dem_tif)
+
+        def pt_to_rc(pt):
+            return int((maxy - pt.y) / abs(dy)), int((pt.x - minx) / dx)
+
+        final_indices = []
+        for pt in target_points:
+            r, c = pt_to_rc(pt)
+            curve_data_df['d_pix'] = np.sqrt((curve_data_df['Row'] - r) ** 2 + (curve_data_df['Col'] - c) ** 2)
+            final_indices.append(curve_data_df['d_pix'].idxmin())
+
+        extracted_curve = curve_data_df.loc[final_indices].copy()
+        target_ids = extracted_curve['XS_ID'].unique()
+        self.vdt_gdf = vdt_df[vdt_df['XS_ID'].isin(target_ids)].copy()
+
+        x_base, y_base = float(minx) + 0.5 * dx, float(maxy) - 0.5 * abs(dy)
+        extracted_curve['X'] = x_base + extracted_curve['Col'] * dx
+        extracted_curve['Y'] = y_base - extracted_curve['Row'] * abs(dy)
+        transformer = Transformer.from_crs(projected_crs, "EPSG:4326", always_xy=True)
+        extracted_curve[['Lon', 'Lat']] = extracted_curve.apply(
+            lambda r: pd.Series(transformer.transform(r['X'], r['Y'])), axis=1)
+        self.curve_data_gdf = gpd.GeoDataFrame(extracted_curve,
+                                               geometry=gpd.points_from_xy(extracted_curve.Lon, extracted_curve.Lat),
+                                               crs="EPSG:4326")
+
+        xs_lines = []
+        with open(self.xs_txt, 'r') as f:
+            lines = f.readlines()
+            for i in range(0, len(lines), 2):
+                try:
+                    meta = lines[i].strip().split('\t')
+                    if int(meta[0]) in target_ids:
+                        coords = [tuple(map(float, c.split(','))) for c in lines[i + 1].strip().split(' ')]
+                        xs_lines.append({'XS_ID': int(meta[0]), 'geometry': LineString(coords)})
+                except:
+                    continue
+        self.xs_gdf = gpd.GeoDataFrame(xs_lines, crs=projected_crs).to_crs("EPSG:4326")
 
     def process_dam(self):
-        """Setup directories and assess the dam."""
-        for sd in ['STRM', 'ARC_InputFiles', 'Bathymetry', 'VDT', 'XS']:
-            folder = self.output_dir / self.name / sd
-            setattr(self, f"{sd.lower().split('_')[0]}_dir", str(folder))
-            folder.mkdir(parents=True, exist_ok=True)
+        """Execution loop for processing a single dam."""
+        print(f"Processing Dam: {self.dam_id}")
+        dirs = {sd: self.output_dir / str(self.dam_id) / sd for sd in
+                ['STRM', 'ARC_InputFiles', 'Bathymetry', 'VDT', 'XS', 'LAND']}
+        for d in dirs.values(): d.mkdir(parents=True, exist_ok=True)
 
-        for dem in [f for f in os.listdir(self.dem_dir) if f.endswith('.tif')]:
+        self.manning_n_txt = str(dirs['LAND'] / 'Manning_n.txt')
+        create_mannings_esa(self.manning_n_txt)
+
+        dems = [f for f in os.listdir(self.dem_dir) if f.endswith('.tif')]
+        for dem in dems:
+            print(f"  Processing DEM: {dem}")
             self.dem_tif = str(self.dem_dir / dem)
-            self.arc_input = os.path.join(self.arc_dir, f'ARC_Input_{self.dam_id}.txt')
-            self.bathy_tif = os.path.join(self.bathy_dir, f'{self.dam_id}_Bathy.tif')
-            self.xs_txt = os.path.join(self.xs_dir, f'{self.dam_id}_XS.txt')
+            self.arc_input = str(dirs['ARC_InputFiles'] / f'ARC_Input_{self.dam_id}.txt')
+            self.bathy_tif = str(dirs['Bathymetry'] / f'{self.dam_id}_Bathy.tif')
+            self.strm_tif_clean = str(dirs['STRM'] / f'{self.dam_id}_STRM_Clean.tif')
+            self.vdt_txt = str(dirs['VDT'] / f'{self.dam_id}_VDT.txt')
+            self.curvefile_csv = str(dirs['VDT'] / f'{self.dam_id}_Curve.csv')
+            self.xs_txt = str(dirs['XS'] / f'{self.dam_id}_XS.txt')
+            self.land_tif = str(self.land_raster)
 
-            self._process_geospatial_data()
+            if not os.path.exists(self.strm_tif_clean):
+                print("    Creating clean stream raster...")
+                raw_strm = self.strm_tif_clean.replace('_Clean.tif', '.tif')
+                create_arc_strm_raster(str(self.flowline), raw_strm, self.dem_tif, self.rivid_field)
+                clean_strm_raster(raw_strm, self.strm_tif_clean)
+
             if not os.path.exists(self.bathy_tif):
-                Arc(self.arc_input).run()
+                print("    Running ARC simulation...")
+                self._create_arc_input_txt(self.rivid_field, "known_baseflow", "rp100")
+                arc_runner = Arc(self.arc_input, quiet=False)
+                try:
+                    arc_runner.set_log_level('info')
+                except AttributeError:
+                    pass
+                arc_runner.run()
+
+            print("    Extracting hydraulic cross-sections...")
+            self._find_strm_up_downstream()
+            self.vdt_gdf.to_csv(str(dirs['VDT'] / f'{self.dam_id}_Local_VDT.csv'), index=False)
+            self.curve_data_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_Curve.gpkg'))
+            self.xs_gdf.to_file(str(dirs['XS'] / f'{self.dam_id}_Local_XS.gpkg'))
+        print(f"Finished Dam: {self.dam_id}")
