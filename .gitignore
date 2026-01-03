@@ -1,6 +1,16 @@
+# Geospatial / data formats
 *.gpkg
 *.parquet
-*.idea
-*.xlsx
-*.zarr
-*cache
+*.zarr/
+
+# Excel (scratch files)
+*_temp.xlsx
+*_scratch.xlsx
+
+# IDE
+.idea/
+
+# Cache
+cache/
+.cache/
+*_cache/

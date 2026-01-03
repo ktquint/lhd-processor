@@ -1,6 +1,7 @@
 # build-in imports
 import os
 from pathlib import Path
+import ast
 
 # third-party imports
 from arc import Arc  # automated rating curve generator
@@ -252,64 +253,92 @@ class RathCelonDam:
 
     def _find_strm_up_downstream(self):
         """Extracts the specific hydraulic cross-sections after ARC run."""
-        vdt_df = pd.read_csv(self.vdt_txt, sep='\t')
-        curve_data_df = pd.read_csv(self.curvefile_csv)
+        print(f"    Extracting hydraulic cross-sections for Dam {self.dam_id}...")
 
-        dam_flowline_gdf = gpd.read_file(self.flowline)
-        projected_crs = dam_flowline_gdf.estimate_utm_crs()
-        dam_flowline_gdf = dam_flowline_gdf.to_crs(projected_crs)
+        if not os.path.exists(self.vdt_txt) or not os.path.exists(self.curvefile_csv) or not os.path.exists(self.flowline) or not self.dem_tif:
+            print("    ❌ Missing input files for extraction.")
+            return
+
+        # Load VDT and Curve
+        try:
+            vdt_df = pd.read_csv(self.vdt_txt, sep=',')
+            curve_df = pd.read_csv(self.curvefile_csv)
+            vdt_df.columns = [c.strip() for c in vdt_df.columns]
+            curve_df.columns = [c.strip() for c in curve_df.columns]
+        except Exception as e:
+            print(f"    ❌ Error loading VDT/Curve: {e}")
+            return
+
+        # Load Flowline
+        flowline_gdf = gpd.read_file(self.flowline)
+        if flowline_gdf.empty:
+            print("    ❌ Flowline GeoDataFrame is empty.")
+            return
+
+        # Project flowline
+        try:
+            projected_crs = flowline_gdf.estimate_utm_crs()
+        except:
+            with rasterio.open(self.dem_tif) as ds:
+                projected_crs = CRS.from_wkt(ds.crs.to_wkt())
+        flowline_gdf = flowline_gdf.to_crs(projected_crs)
+
+        # Project dam point
         dam_point = gpd.GeoSeries([Point(self.longitude, self.latitude)], crs="EPSG:4326").to_crs(projected_crs).iloc[0]
 
-        # Merge flowlines into a single geometry
-        merged_geom = linemerge(dam_flowline_gdf.geometry.tolist())
-
-        # Handle MultiLineString if merge wasn't perfect
+        # Merge flowline
+        merged_geom = linemerge(flowline_gdf.geometry.tolist())
         if merged_geom.geom_type == 'MultiLineString':
             merged_geom = min(merged_geom.geoms, key=lambda g: g.distance(dam_point))
-
-        # Project dam point onto the line
         start_dist = merged_geom.project(dam_point)
 
-        target_points = []
+        # Generate target points
+        target_points = [merged_geom.interpolate(min(start_dist + i * self.weir_length, merged_geom.length)) for i in range(1, 5)]
+        target_points.append(merged_geom.interpolate(max(start_dist - self.weir_length, 0)))
 
-        # Downstream points (4 points)
-        for i in range(1, 5):
-            target_dist = start_dist + (i * self.weir_length)
-            if target_dist > merged_geom.length:
-                target_dist = merged_geom.length
-            target_points.append(merged_geom.interpolate(target_dist))
-
-        # Upstream point (1 point)
-        us_dist = start_dist - self.weir_length
-        if us_dist < 0:
-            us_dist = 0
-        target_points.append(merged_geom.interpolate(us_dist))
-
-        minx, miny, maxx, maxy, dx, dy, _, _, _, proj_wkt = get_raster_info(self.dem_tif)
-        dem_crs = CRS.from_wkt(proj_wkt)
-
-        # Transform points to DEM CRS for pixel lookup
-        transformer_to_dem = Transformer.from_crs(projected_crs, dem_crs, always_xy=True)
-        target_points_dem = [Point(transformer_to_dem.transform(pt.x, pt.y)) for pt in target_points]
+        # Transform target points to DEM
+        with rasterio.open(self.dem_tif) as ds:
+            geoTransform = ds.transform
+            minx, dx = geoTransform.c, geoTransform.a
+            maxy, dy = geoTransform.f, geoTransform.e
+            dem_crs = CRS.from_wkt(ds.crs.to_wkt())
+        
+        transformer = Transformer.from_crs(projected_crs, dem_crs, always_xy=True)
+        target_points_dem = [Point(transformer.transform(pt.x, pt.y)) for pt in target_points]
 
         def pt_to_rc(pt):
             return int((maxy - pt.y) / abs(dy)), int((pt.x - minx) / dx)
 
+        # Calculate Row/Col for target points
+        tp_gdf = gpd.GeoDataFrame(geometry=target_points, crs=projected_crs)
+        rc_values = [pt_to_rc(pt) for pt in target_points_dem]
+        tp_gdf['Row'] = [x[0] for x in rc_values]
+        tp_gdf['Col'] = [x[1] for x in rc_values]
+
+        # Match points to Curve (Spatial match to find correct Row/Col in Curve)
         final_indices = []
-        for pt in target_points_dem:
-            r, c = pt_to_rc(pt)
-            curve_data_df['d_pix'] = np.sqrt((curve_data_df['Row'] - r) ** 2 + (curve_data_df['Col'] - c) ** 2)
-            final_indices.append(curve_data_df['d_pix'].idxmin())
+        for idx, row in tp_gdf.iterrows():
+            r = row['Row']
+            c = row['Col']
+            curve_df['d_pix'] = np.sqrt((curve_df['Row'] - r) ** 2 + (curve_df['Col'] - c) ** 2)
+            best_idx = curve_df['d_pix'].idxmin()
+            final_indices.append(best_idx)
 
-        extracted_curve = curve_data_df.loc[final_indices].copy()
-        target_ids = extracted_curve['XS_ID'].unique()
-        self.vdt_gdf = vdt_df[vdt_df['XS_ID'].isin(target_ids)].copy()
-
-        x_base, y_base = float(minx) + 0.5 * dx, float(maxy) - 0.5 * abs(dy)
+        extracted_curve = curve_df.loc[final_indices].copy()
+        
+        # Determine ID field (COMID or XS_ID)
+        id_col = 'COMID' if 'COMID' in extracted_curve.columns else 'XS_ID'
+        
+        # Filter VDT
+        target_ids = extracted_curve[id_col].unique()
+        self.vdt_gdf = vdt_df[vdt_df[id_col].isin(target_ids)].copy()
+        
+        # Create Curve GeoDataFrame
+        x_base = float(minx) + 0.5 * dx
+        y_base = float(maxy) - 0.5 * abs(dy)
         extracted_curve['X'] = x_base + extracted_curve['Col'] * dx
         extracted_curve['Y'] = y_base - extracted_curve['Row'] * abs(dy)
         
-        # Transform back to WGS84 for output, using DEM CRS as source
         transformer_to_wgs = Transformer.from_crs(dem_crs, "EPSG:4326", always_xy=True)
         extracted_curve[['Lon', 'Lat']] = extracted_curve.apply(
             lambda r: pd.Series(transformer_to_wgs.transform(r['X'], r['Y'])), axis=1)
@@ -317,18 +346,86 @@ class RathCelonDam:
                                                geometry=gpd.points_from_xy(extracted_curve.Lon, extracted_curve.Lat),
                                                crs="EPSG:4326")
 
+        # Convert VDT to GeoDataFrame
+        geom_map = dict(zip(self.curve_data_gdf[id_col], self.curve_data_gdf.geometry))
+        self.vdt_gdf = gpd.GeoDataFrame(self.vdt_gdf, geometry=self.vdt_gdf[id_col].map(geom_map), crs="EPSG:4326")
+
+        # XS Extraction
         xs_lines = []
-        with open(self.xs_txt, 'r') as f:
-            lines = f.readlines()
-            for i in range(0, len(lines), 2):
-                try:
-                    meta = lines[i].strip().split('\t')
-                    if int(meta[0]) in target_ids:
-                        coords = [tuple(map(float, c.split(','))) for c in lines[i + 1].strip().split(' ')]
-                        xs_lines.append({'XS_ID': int(meta[0]), 'geometry': LineString(coords)})
-                except:
-                    continue
-        self.xs_gdf = gpd.GeoDataFrame(xs_lines, crs=projected_crs).to_crs("EPSG:4326")
+        if os.path.exists(self.xs_txt):
+            try:
+                xs_df = pd.read_csv(self.xs_txt, sep='\t')
+                xs_df.columns = [c.strip() for c in xs_df.columns]
+                
+                xs_id_col = 'COMID' if 'COMID' in xs_df.columns else 'XS_ID'
+                
+                # Merge XS with extracted_curve on ID, Row, Col
+                merged_xs = xs_df.merge(extracted_curve[[id_col, 'Row', 'Col']], 
+                                        left_on=[xs_id_col, 'Row', 'Col'], 
+                                        right_on=[id_col, 'Row', 'Col'], 
+                                        how='inner')
+
+                transformer_ll = Transformer.from_crs(projected_crs, "EPSG:4326", always_xy=True)
+
+                for _, row in merged_xs.iterrows():
+                    try:
+                        comid = int(row[xs_id_col])
+
+                        def ensure_list(val):
+                            if isinstance(val, str) and val.startswith('['):
+                                return ast.literal_eval(val)
+                            elif isinstance(val, (float, int)):
+                                return [val]
+                            else:
+                                return val
+
+                        xs1 = ensure_list(row['XS1_Profile'])
+                        n1 = ensure_list(row['Manning_N_Raster1'])
+                        xs2 = ensure_list(row['XS2_Profile']) if 'XS2_Profile' in row else None
+                        n2 = ensure_list(row['Manning_N_Raster2']) if 'Manning_N_Raster2' in row else None
+                        ord_dist = ensure_list(row['Ordinate_Dist'])
+
+                        if xs1 is None or ord_dist is None or len(xs1) < 2:
+                            continue
+
+                        x1 = x_base + row['c1'] * dx
+                        y1 = y_base - row['r1'] * abs(dy)
+                        x2 = x_base + row['c2'] * dx
+                        y2 = y_base - row['r2'] * abs(dy)
+
+                        lon1, lat1 = transformer_ll.transform(x1, y1)
+                        lon2, lat2 = transformer_ll.transform(x2, y2)
+
+                        line_geom = LineString([(x1, y1), (x2, y2)])
+
+                        xs_lines.append({
+                            'COMID': comid,
+                            'Row': int(row['Row']),
+                            'Col': int(row['Col']),
+                            'geometry': line_geom,
+                            'XS1_Profile': str(xs1),
+                            'Ordinate_Dist': str(ord_dist),
+                            'Manning_N_Raster1': str(n1),
+                            'XS2_Profile': str(xs2) if xs2 is not None else None,
+                            'Manning_N_Raster2': str(n2) if n2 is not None else None,
+                            'r1': int(row['r1']),
+                            'c1': int(row['c1']),
+                            'r2': int(row['r2']),
+                            'c2': int(row['c2']),
+                            'X1': x1, 'Y1': y1, 'X2': x2, 'Y2': y2,
+                            'Lon1': lon1, 'Lat1': lat1, 'Lon2': lon2, 'Lat2': lat2
+                        })
+                    except Exception as e:
+                        print(f"    ⚠️ Error parsing XS row: {e}")
+
+            except Exception as e:
+                print(f"    ⚠️ Error processing XS file: {e}")
+
+        if xs_lines:
+            self.xs_gdf = gpd.GeoDataFrame(xs_lines, crs=projected_crs).to_crs("EPSG:4326")
+        else:
+            print("    ⚠️ No XS lines extracted.")
+            self.xs_gdf = gpd.GeoDataFrame(columns=['geometry', 'COMID'], crs="EPSG:4326")
 
     def process_dam(self):
         """Execution loop for processing a single dam."""
@@ -370,7 +467,7 @@ class RathCelonDam:
 
             print("    Extracting hydraulic cross-sections...")
             self._find_strm_up_downstream()
-            self.vdt_gdf.to_csv(str(dirs['VDT'] / f'{self.dam_id}_Local_VDT.csv'), index=False)
+            self.vdt_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_VDT_Database.gpkg'))
             self.curve_data_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_Curve.gpkg'))
             self.xs_gdf.to_file(str(dirs['XS'] / f'{self.dam_id}_Local_XS.gpkg'))
         print(f"Finished Dam: {self.dam_id}")
