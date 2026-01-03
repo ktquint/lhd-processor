@@ -211,6 +211,9 @@ class RathCelonDam:
         self.xs_txt = None
         self.land_tif = None
         self.manning_n_txt = None
+        self.vdt_gdf = None
+        self.curve_data_gdf = None
+        self.xs_gdf = None
 
     def _create_arc_input_txt(self, Q_baseflow, Q_max):
         """Full implementation of ARC input generation with all original parameters."""
@@ -467,7 +470,12 @@ class RathCelonDam:
 
             print("    Extracting hydraulic cross-sections...")
             self._find_strm_up_downstream()
-            self.vdt_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_VDT_Database.gpkg'))
-            self.curve_data_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_Curve.gpkg'))
-            self.xs_gdf.to_file(str(dirs['XS'] / f'{self.dam_id}_Local_XS.gpkg'))
+            
+            if self.vdt_gdf is not None:
+                self.vdt_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_VDT_Database.gpkg'))
+            if self.curve_data_gdf is not None:
+                self.curve_data_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_Curve.gpkg'))
+            if self.xs_gdf is not None:
+                self.xs_gdf.to_file(str(dirs['XS'] / f'{self.dam_id}_Local_XS.gpkg'))
+                
         print(f"Finished Dam: {self.dam_id}")
