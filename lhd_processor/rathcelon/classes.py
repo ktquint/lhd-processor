@@ -110,11 +110,17 @@ def create_mannings_esa(manning_txt):
     """Writes standard Manning's n look-up table for ESA WorldCover."""
     with open(manning_txt, 'w') as f:
         f.write('LC_ID\tDescription\tManning_n\n')
-        f.write(
-            '10\tTree Cover\t0.120\n20\tShrubland\t0.070\n30\tGrassland\t0.035\n40\tCropland\t0.035\n50\tBuilt-up\t0.150\n')
-        f.write(
-            '60\tBare / Sparse Vegetation\t0.040\n70\tSnow and Ice\t0.025\n80\tPermanent Water Bodies\t0.045\n90\tHerbaceous Wetland\t0.100\n')
-        f.write('95\tMangroves\t0.150\n100\tMoss and Lichen\t0.040\n')
+        f.write('10\tTree Cover\t0.120\n')
+        f.write('20\tShrubland\t0.050\n')
+        f.write('30\tGrassland\t0.030\n')
+        f.write('40\tCropland\t0.035\n')
+        f.write('50\tBuiltup\t0.075\n')
+        f.write('60\tBare\t0.030\n')
+        f.write('70\tSnowIce\t0.030\n')
+        f.write('80\tWater\t0.030\n')
+        f.write('90\tHerbaceous Wetland\t0.100\n')
+        f.write('95\tMangroves\t0.100\n')
+        f.write('100\tMossLichen\t0.100\n')
 
 
 def move_upstream(point, current_link, distance, G):
@@ -193,6 +199,17 @@ class RathCelonDam:
             self.streamflow = data_dir / 'nwm_to_geoglows_reanalysis.csv'
         else:
             self.streamflow = data_dir / 'nwm_reanalysis.csv'
+
+        # files that will be made with arc or used in arc input
+        self.dem_tif = None
+        self.arc_input = None
+        self.bathy_tif = None
+        self.strm_tif_clean = None
+        self.vdt_txt = None
+        self.curvefile_csv = None
+        self.xs_txt = None
+        self.land_tif = None
+        self.manning_n_txt = None
 
     def _create_arc_input_txt(self, Q_baseflow, Q_max):
         """Full implementation of ARC input generation with all original parameters."""
@@ -344,7 +361,7 @@ class RathCelonDam:
             if not os.path.exists(self.bathy_tif):
                 print("    Running ARC simulation...")
                 self._create_arc_input_txt("known_baseflow", "rp100")
-                arc_runner = Arc(self.arc_input, quiet=False)
+                arc_runner = Arc(self.arc_input, quiet=True)
                 try:
                     arc_runner.set_log_level('info')
                 except AttributeError:
