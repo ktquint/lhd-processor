@@ -2,3 +2,5 @@
 *.parquet
 *.idea
 *.xlsx
+*.zarr
+*cache
