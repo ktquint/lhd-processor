@@ -1,7 +1,7 @@
 # build-in imports
+import ast
 import os
 from pathlib import Path
-import ast
 
 # third-party imports
 from arc import Arc  # automated rating curve generator
@@ -293,6 +293,10 @@ class RathCelonDam:
         merged_geom = linemerge(flowline_gdf.geometry.tolist())
         if merged_geom.geom_type == 'MultiLineString':
             merged_geom = min(merged_geom.geoms, key=lambda g: g.distance(dam_point))
+
+        if self.flowline_source == 'TDX-Hydro':
+            merged_geom = LineString(list(merged_geom.coords)[::-1])
+
         start_dist = merged_geom.project(dam_point)
 
         # Generate target points

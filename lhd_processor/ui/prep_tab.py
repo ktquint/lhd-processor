@@ -227,7 +227,7 @@ def threaded_prepare_data():
 
         db = DatabaseManager(xlsx_path)
         site_ids = db.sites['site_id'].tolist()
-        total_dams = len(site_ids)
+        # total_dams = len(site_ids)
 
         ui_dir = os.path.dirname(os.path.realpath(__file__))
         package_root = os.path.dirname(ui_dir)
