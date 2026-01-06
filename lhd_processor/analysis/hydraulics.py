@@ -130,6 +130,7 @@ def get_xs_props(water_depth, xs1, xs2, dist):
     depths = water_depth - y_combined
     depths[depths < 0] = 0
 
+    # Use trapz for compatibility with older numpy versions
     Area = np.trapz(depths, x_combined)
 
     if Area <= 0:
@@ -162,7 +163,7 @@ def calc_froude_custom(Q, y, xs1, xs2, dist):
     return V / np.sqrt(g * D)
 
 
-def solve_y1_downstream(Q, L, P, xs1, xs2, dist):
+def solve_y1_adv(Q, L, P, xs1, xs2, dist):
     """
     Robustly solves for the supercritical toe depth (y1) using Specific Energy.
     Uses critical depth as a physical boundary for the root search.
@@ -250,6 +251,15 @@ def solve_y2_jump(Q, y1, xs1, xs2, dist):
         return 0.0
 
 
+def solve_y2_adv(Q, L, P, xs1, xs2, dist):
+    """
+    Solves for the sequent depth (y2) directly from Q, L, P.
+    Internally calls solve_y1_adv first.
+    """
+    y_1 = solve_y1_adv(Q, L, P, xs1, xs2, dist)
+    return solve_y2_jump(Q, y_1, xs1, xs2, dist)
+
+
 def Fr_eq(Fr, x):
     A = (9 / (4 * C_W**2)) * 0.5 * Fr**2
     term1 = A**(1/3) * (1 + 1/x)
@@ -298,6 +308,27 @@ def compute_y_flip(Q, L, P):
     return (H + P) / 1.1
 
 
+def _solve_intersection(residual_func, q_min, q_max, fallback_val):
+    """
+    Helper to find intersection or return bounds based on residual signs.
+    """
+    res_min = residual_func(q_min)
+    res_max = residual_func(q_max)
+    
+    if res_min * res_max < 0:
+        try:
+            sol = root_scalar(residual_func, bracket=(q_min, q_max), method='brentq')
+            return sol.root
+        except ValueError:
+            return fallback_val
+    else:
+        # Signs are the same
+        if res_min < 0:
+            return q_min
+        else:
+            return q_max
+
+
 def rating_curve_intercept_adv(L: float, P: float, a: float, b: float,
                                xs1: list[float], xs2: list[float], dist: float,
                                Q_min_search: float, Q_max_search: float) -> tuple[float, float]:
@@ -313,26 +344,14 @@ def rating_curve_intercept_adv(L: float, P: float, a: float, b: float,
         if which == 'flip':
             y_target = compute_y_flip(Q, L, P)
         elif which == 'conjugate':
-            y_1 = solve_y1_downstream(Q, L, P, xs1, xs2, dist)
-            y_target = solve_y2_jump(Q, y_1, xs1, xs2, dist)
+            y_target = solve_y2_adv(Q, L, P, xs1, xs2, dist)
         else:
             return 1e6
             
         return y_target - y_t
 
-    # Find Q_max (Flip intersection)
-    try:
-        sol_max = root_scalar(lambda q: residual(q, 'flip'), bracket=(Q_min_search, Q_max_search), method='brentq')
-        Q_max = sol_max.root
-    except ValueError:
-        Q_max = -9999.0 # Flag for no intersection
-
-    # Find Q_min (Conjugate intersection)
-    try:
-        sol_min = root_scalar(lambda q: residual(q, 'conjugate'), bracket=(Q_min_search, Q_max_search), method='brentq')
-        Q_min = sol_min.root
-    except ValueError:
-        Q_min = -9999.0 # Flag for no intersection
+    Q_min = _solve_intersection(lambda q: residual(q, 'conjugate'), Q_min_search, Q_max_search, Q_min_search)
+    Q_max = _solve_intersection(lambda q: residual(q, 'flip'), Q_min_search, Q_max_search, Q_max_search)
         
     return Q_min, Q_max
 
@@ -462,19 +481,7 @@ def rating_curve_intercepts_simp(L_input: float, P_input: float, a: float, b: fl
             
         return y_target - y_t
 
-    # Find Q_max (Flip intersection)
-    try:
-        # Search for root where y_flip - y_t = 0
-        sol_max = root_scalar(lambda q: residual(q, 'flip'), bracket=(Q_min_search, Q_max_search), method='brentq')
-        Q_max = sol_max.root
-    except ValueError:
-        Q_max = -9999.0 # Flag for no intersection
-
-    # Find Q_min (Conjugate intersection)
-    try:
-        sol_min = root_scalar(lambda q: residual(q, 'conjugate'), bracket=(Q_min_search, Q_max_search), method='brentq')
-        Q_min = sol_min.root
-    except ValueError:
-        Q_min = -9999.0 # Flag for no intersection
+    Q_min = _solve_intersection(lambda q: residual(q, 'conjugate'), Q_min_search, Q_max_search, Q_min_search)
+    Q_max = _solve_intersection(lambda q: residual(q, 'flip'), Q_min_search, Q_max_search, Q_max_search)
         
     return Q_min, Q_max

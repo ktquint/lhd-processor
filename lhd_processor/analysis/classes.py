@@ -16,13 +16,14 @@ from matplotlib_scalebar.scalebar import ScaleBar
 # Internal imports
 from .hydraulics import (solve_weir_geom_adv,
                          solve_weir_geom_simp,
-                         solve_y2_jump,
+                         solve_y2_adv,
                          weir_H_simp,
                          compute_y_flip,
-                         solve_y1_downstream,
+                         solve_y1_adv,
                          solve_y1_simp,
                          get_xs_props,
-                         rating_curve_intercepts_simp)
+                         rating_curve_intercepts_simp,
+                         rating_curve_intercept_adv)
 
 from .utils import (merge_arc_results,
                     merge_databases,
@@ -231,8 +232,7 @@ class CrossSection:
                     H, P = solve_weir_geom_adv(Q_b, self.L, y_t, delta_wse)
 
                     # --- ADDED: Calculate and Plot Sequent Depth (y2) ---
-                    y_1_calc = solve_y1_downstream(Q_b, self.L, P, self.y_1_shifted, self.y_2_shifted, self.dist)
-                    y_2_calc = solve_y2_jump(Q_b, y_1_calc, self.y_1_shifted, self.y_2_shifted, self.dist)
+                    y_2_calc = solve_y2_adv(Q_b, self.L, P, self.y_1_shifted, self.y_2_shifted, self.dist)
                     y_2_elev = self.bed_elevation + y_2_calc
 
                     # Find lateral extents for y2 line (Center -> Out)
@@ -323,8 +323,8 @@ class CrossSection:
         for i, Q in enumerate(Qs):
             Y_Flip = compute_y_flip(Q, self.L, self.P)
             # Use shifted profiles
-            Y_Conj1 = solve_y1_downstream(Q, self.L, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
-            Y_Conj2 = solve_y2_jump(Q, Y_Conj1, self.y_1_shifted, self.y_2_shifted, self.dist)
+            Y_Conj1 = solve_y1_adv(Q, self.L, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
+            Y_Conj2 = solve_y2_adv(Q, Y_Conj1, self.y_1_shifted, self.y_2_shifted, self.dist)
             Y_Flips.append(Y_Flip)
             Y_Conjugates.append(Y_Conj2)
 
@@ -363,7 +363,9 @@ class CrossSection:
 
     def get_dangerous_flow_range(self):
         if self.calc_mode == "Advanced":
-            return 0,10
+            return rating_curve_intercept_adv(self.L, self.P, self.a, self.b,
+                                              self.y_1_shifted, self.y_2_shifted, self.dist,
+                                              self.Qmin, self.Qmax)
         elif self.calc_mode == "Simplified":
             return rating_curve_intercepts_simp(self.L, self.P, self.a, self.b,
                                                 self.Qmin, self.Qmax)
@@ -513,8 +515,8 @@ class Dam:
                     if self.calc_mode == "Advanced":
                         H_i, P_i = solve_weir_geom_adv(self.baseflow, self.weir_length, y_i, delta_wse)
                         # Updated to pass shifted profiles
-                        y_1 = solve_y1_downstream(self.baseflow, self.weir_length, P_i, xs.y_1_shifted, xs.y_2_shifted,
-                                                  xs.dist)
+                        y_1 = solve_y1_adv(self.baseflow, self.weir_length, P_i, xs.y_1_shifted, xs.y_2_shifted,
+                                           xs.dist)
                         if y_1 > P_i:
                             print(f"Warning: Dam {self.id} XS {i} appears drowned.")
                         xs.set_dam_height(P_i)
@@ -549,8 +551,8 @@ class Dam:
                             g = 9.81
                             y_t = xs.get_tailwater_depth(Q)
                             # Updated to pass shifted profiles
-                            y_1 = solve_y1_downstream(Q, xs.L, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
-                            y_2 = solve_y2_jump(Q, y_1, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                            y_1 = solve_y1_adv(Q, xs.L, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                            y_2 = solve_y2_adv(Q, y_1, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
 
                             # Calculate debug props
                             A1, yc1 = get_xs_props(y_1, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
