@@ -14,8 +14,7 @@ from matplotlib.ticker import FixedLocator
 from matplotlib_scalebar.scalebar import ScaleBar
 
 # Internal imports
-from .hydraulics import (solve_weir_geom_adv,
-                         solve_weir_geom_simp,
+from .hydraulics import (solve_weir_geom,
                          solve_y2_adv,
                          calc_y2_simp,
                          weir_H_simp,
@@ -55,7 +54,7 @@ class CrossSection:
         self._init_vdt_data(xs_row)
 
         self.P = None
-        self.H = None
+        self.H = None # head at baseflow condition
 
 
     def _init_metadata(self, xs_row):
@@ -249,7 +248,7 @@ class CrossSection:
     def set_dam_height(self, P):
         self.P = P
 
-    def set_head(self, H):
+    def set_weir_head(self, H):
         self.H = H
 
 
@@ -266,14 +265,14 @@ class CrossSection:
 
                 us_x_left = []
                 for i, elev in enumerate(self.y_1_raw):
-                    if elev <= wse_upstream and elev > -1e5:
+                    if wse_upstream >= elev > -1e5:
                         us_x_left.append(self.x_1_coords[i])
                     else:
                         break
 
                 us_x_right = []
                 for i, elev in enumerate(self.y_2_raw):
-                    if elev <= wse_upstream and elev > -1e5:
+                    if wse_upstream >= elev > -1e5:
                         us_x_right.append(self.x_2_coords[i])
                     else:
                         break
@@ -284,10 +283,10 @@ class CrossSection:
                     Q_b = self.parent_dam.baseflow
                     y_t = self.wse - self.bed_elevation
                     delta_wse = wse_upstream - self.wse
-                    H, P = solve_weir_geom_adv(Q_b, self.L, y_t, delta_wse)
+                    H, P = solve_weir_geom(Q_b, self.L, y_t, delta_wse)
 
                     # --- ADDED: Calculate and Plot Sequent Depth (y2) ---
-                    y_2_calc = solve_y2_adv(Q_b, self.L, P, self.y_1_shifted, self.y_2_shifted, self.dist)
+                    y_2_calc = solve_y2_adv(Q_b, self.L, H, P, self.y_1_shifted, self.y_2_shifted, self.dist)
                     y_2_elev = self.bed_elevation + y_2_calc
 
                     # Find lateral extents for y2 line (Center -> Out)
@@ -346,6 +345,7 @@ class CrossSection:
         else:
             return None
 
+
     def get_tailwater_depth(self, Q):
         """
         Calculates tailwater depth using the Power Law function (y = a*x^b).
@@ -353,15 +353,18 @@ class CrossSection:
         """
         return self.a * Q ** self.b
 
+
     def create_rating_curve(self):
         """
         Plots the rating curve using the Power Law function (y = a*x^b).
         Ignores VDT database values.
         """
-        x = np.linspace(0.01, self.max_Q, 100)
-        y = self.a * x ** self.b
+        Qmin_plot = self.Qmin if self.Qmin != 0 else 0.01
+        Qs = np.linspace(Qmin_plot, self.Qmax, 100)
+        Ys = self.get_tailwater_depth(Qs)
         label = f'Rating Curve (Power Law) {self.distance}m {self.location}'
-        plt.plot(x, y, label=label)
+        plt.plot(Qs, Ys, label=label)
+
 
     def plot_flip_sequent(self, ax):
         """
@@ -369,8 +372,9 @@ class CrossSection:
         Ignores VDT database values.
         """
         # Always use linspace and power function
-        Qs = np.linspace(0.01, self.max_Q, 100)
-        Y_Ts = self.a * Qs ** self.b
+        Qmin_plot = self.Qmin if self.Qmin != 0 else 0.01
+        Qs = np.linspace(Qmin_plot, self.Qmax, 100)
+        Y_Ts = self.get_tailwater_depth(Qs)
 
         Y_Flips = []
         Y_Conjugates = []
@@ -378,7 +382,7 @@ class CrossSection:
         for i, Q in enumerate(Qs):
             Y_Flip = compute_y_flip(Q, self.L, self.P)
             # Use shifted profiles
-            Y_Conj2 = solve_y2_adv(Q, self.L, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
+            Y_Conj2 = solve_y2_adv(Q, self.L, self.H, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
             Y_Flips.append(Y_Flip)
             Y_Conjugates.append(Y_Conj2)
 
@@ -547,12 +551,8 @@ class Dam:
     def load_results(self):
         if self.db.xsections.empty:
             return
-        
-        id_col = 'site_id' if 'site_id' in self.db.xsections.columns else 'dam_id'
-        if id_col not in self.db.xsections.columns:
-            return
 
-        xs_data = self.db.xsections[self.db.xsections[id_col] == self.id]
+        xs_data = self.db.xsections[self.db.xsections['site_id'] == self.id]
         if xs_data.empty:
             return
         for xs in self.cross_sections:
@@ -564,9 +564,7 @@ class Dam:
                     if pd.notnull(p_val):
                         P = float(p_val)
                         xs.set_dam_height(P)
-                        if self.baseflow > 0:
-                            H = weir_H_simp(self.baseflow, self.weir_length)
-                            xs.set_head(H)
+
                 except Exception as e:
                     print(f"Error loading parameters for XS {xs.index}: {e}")
 
@@ -582,39 +580,36 @@ class Dam:
                 'slope': xs.slope,
                 'depth_a': xs.a,
                 'depth_b': xs.b,
-                'P_height': None,
-                'p_height': None
+                'P_height': None
             }
             if i < len(self.cross_sections) - 1:
+                # the difference in water surface elevation
+                # going from the upstream cross-section to
+                # the current cross-section
                 delta_wse = self.cross_sections[-1].wse - xs.wse
                 y_i = xs.wse - xs.bed_elevation
                 try:
-                    if self.calc_mode == "Advanced":
-                        H_i, P_i = solve_weir_geom_adv(self.baseflow, self.weir_length, y_i, delta_wse)
-                        # Updated to pass shifted profiles
-                        y_1 = solve_y1_adv(self.baseflow, self.weir_length, P_i, xs.y_1_shifted, xs.y_2_shifted,
-                                           xs.dist)
-                        if y_1 > P_i:
-                            print(f"Warning: Dam {self.id} XS {i} appears drowned.")
-                        xs.set_dam_height(P_i)
-                        xs.set_head(H_i)
-                        xs_info['P_height'] = P_i
-                        xs_info['p_height'] = P_i
+                    # calculate the dam height and weir head at baseflow conditions
+                    H_i, P_i = solve_weir_geom(self.baseflow, self.weir_length,
+                                               y_i, delta_wse)
 
-                    elif self.calc_mode == "Simplified":
-                        H_i, P_i = solve_weir_geom_simp(self.baseflow, self.weir_length, y_i, delta_wse)
+                    # solve for y_1 to see if the weir is drowned
+                    if self.calc_mode == "Advanced":
+                        y_1 = solve_y1_adv(self.baseflow, self.weir_length, H_i, P_i,
+                                           xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                    else: # self.calc_mode == "Simplified":
                         y_1 = solve_y1_simp(H_i, P_i)
-                        if y_1 > P_i:
-                            print(f"Warning: Dam {self.id} XS {i} appears drowned.")
-                        xs.set_dam_height(P_i)
-                        xs.set_head(H_i)
-                        xs_info['P_height'] = P_i
-                        xs_info['p_height'] = P_i
+                    if y_1 > P_i:
+                        print(f"Warning: Dam {self.id} XS {i} appears drowned.")
+
+                    # save the dam height to the cross-section
+                    xs.set_dam_height(P_i)
+                    xs.set_weir_head(H_i)
+                    xs_info['P_height'] = P_i
 
                 except Exception as e:
                     print(f"Solver failed for Dam {self.id} XS {i}: {e}")
                     xs_info['P_height'] = None
-                    xs_info['p_height'] = None
 
                 if xs.P:
                     try:
@@ -623,6 +618,7 @@ class Dam:
                         xs_info['Qmax'] = q_max
                     except:
                         pass
+
                 for _, inc_row in self.incidents_df.iterrows():
                     if self.hydrology == 'National Water Model':
                         Q = inc_row['flow_nwm']
@@ -634,7 +630,7 @@ class Dam:
                             y_t = xs.get_tailwater_depth(Q)
                             # Updated to pass shifted profiles
                             if self.calc_mode == "Advanced":
-                                y_2 = solve_y2_adv(Q, xs.L, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                                y_2 = solve_y2_adv(Q, xs.L, xs.H, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
                             else:
                                 H = weir_H_simp(Q, xs.L)
                                 y_2 = calc_y2_simp(H, xs.P)
@@ -668,7 +664,7 @@ class Dam:
                     if os.path.exists(zarr_path):
                         ds = xr.open_zarr(zarr_path)
                         if 'streamflow' in ds:
-                            # Assuming the zarr structure has feature_id as a dimension or coordinate
+                            # Assuming the zarr structure has feature_id as a dimension or coordinate,
                             # and we want to select by it.
                             # Adjust selection logic based on actual Zarr structure if needed.
                             # Typically: ds.sel(feature_id=int(self.nwm_id)).streamflow.to_series()

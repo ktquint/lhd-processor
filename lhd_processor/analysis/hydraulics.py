@@ -12,6 +12,7 @@ C_W = 0.62
 
 
 def weir_coef_adv(H_input, P_input):
+    if P_input == -9999: return -9999
     return 0.611 + 0.075 * H_input/P_input
 
 
@@ -163,16 +164,18 @@ def calc_froude_custom(Q, y, xs1, xs2, dist):
     return V / np.sqrt(g * D)
 
 
-def solve_y1_adv(Q, L, P, xs1, xs2, dist):
+def solve_y1_adv(Q, L, H, P, xs1, xs2, dist):
     """
     Robustly solves for the supercritical toe depth (y1) using Specific Energy.
     Uses critical depth as a physical boundary for the root search.
     """
+    if P == -9999: return -9999
+
     # 1. Calculate Available Total Energy (Bernoulli)
-    H = weir_H_simp(Q, L)
     A_o = L * H
     V_o = Q / A_o
-    E_total = P + H + (V_o ** 2) / (2 * g)
+    hv_o = (V_o**2) / (2 * g) # velocity head
+    E_total = P + H + hv_o
 
     # 2. Define Residual Function (E_calc - E_total)
     def energy_residual(y):
@@ -180,8 +183,20 @@ def solve_y1_adv(Q, L, P, xs1, xs2, dist):
         A, _ = get_xs_props(y, xs1, xs2, dist)
         if A <= 0: return 1e9
 
-        V = Q / A
-        E_calc = y + (V ** 2) / (2 * g)
+        T_current = get_top_width(y, xs1, xs2, dist)
+
+        if T_current > L:
+            K = 0.3
+        else:
+            K = 0.1
+
+        # calculate downstream velocity head
+        V_1 = Q / A
+        hv_1 = (V_1**2) / (2 * g)
+
+        # add loss to specific energy
+        h_loss = K * abs(hv_1 - hv_o)
+        E_calc = y + hv_1 + h_loss
         return E_calc - E_total
 
     # 3. Establish the Search Bracket
@@ -251,12 +266,14 @@ def solve_y2_jump(Q, y1, xs1, xs2, dist):
         return 0.0
 
 
-def solve_y2_adv(Q, L, P, xs1, xs2, dist):
+def solve_y2_adv(Q, L, H, P, xs1, xs2, dist):
     """
     Solves for the sequent depth (y2) directly from Q, L, P.
     Internally calls solve_y1_adv first.
     """
-    y_1 = solve_y1_adv(Q, L, P, xs1, xs2, dist)
+    if P == -9999: return -9999
+
+    y_1 = solve_y1_adv(Q, L, H, P, xs1, xs2, dist)
     return solve_y2_jump(Q, y_1, xs1, xs2, dist)
 
 
@@ -304,6 +321,7 @@ def weir_H_adv(Q_input, L_input, Delta_wse_input, Y_T_input):
 
 
 def compute_y_flip(Q, L, P):
+    if P == -9999: return -9999
     H = weir_H_simp(Q, L)
     return (H + P) / 1.1
 
@@ -336,15 +354,18 @@ def rating_curve_intercept_adv(L: float, P: float, a: float, b: float,
     Solves the intercept of the tailwater rating curve and the conjugate and flip rating curves
     using advanced hydraulic calculations (XS geometry).
     """
+    if P == -9999: return -9999, -9999
+
     def residual(Q, which):
         if Q <= 0.001: return 1e6
         
         y_t = a * Q ** b
+        H = weir_H_simp(Q, L)
         
         if which == 'flip':
             y_target = compute_y_flip(Q, L, P)
         elif which == 'conjugate':
-            y_target = solve_y2_adv(Q, L, P, xs1, xs2, dist)
+            y_target = solve_y2_adv(Q, L, H, P, xs1, xs2, dist)
         else:
             return 1e6
             
@@ -356,14 +377,14 @@ def rating_curve_intercept_adv(L: float, P: float, a: float, b: float,
     return Q_min, Q_max
 
 
-def solve_weir_geom_adv(Q_input, L_input, YT_input, Wse_input):
+def solve_weir_geom(Q_input, L_input, YT_input, Wse_input):
     """
     Solves for Head (H) and Weir Height (P).
     """
     total_height = YT_input + Wse_input
 
     # 1. Solve H analytically
-    H_solution = weir_H_simp(Q_input, L_input)
+    H_solution = weir_H_adv(Q_input, L_input, Wse_input, YT_input)
 
     # 2. Calculate P
     P_solution = total_height - H_solution
@@ -383,6 +404,8 @@ def solve_y1_simp(H_input, P_input):
         where 
             C_L = 0.1 * P/H
     """
+    if P_input == -9999 or H_input == -9999: return -9999
+
     C_L = 0.1 * P_input / H_input
     
     # Coefficients for the cubic equation: ax^3 + bx^2 + cx + d = 0
@@ -413,6 +436,8 @@ def solve_Fr_simp(H_input, P_input):
         1 - (9/(4 * C_W**2) * 0.5 * Fr**2)**(1/3) * (1 + P/H)
             + 0.5 * Fr**2 * (1 + C_L) = 0
     """
+    if P_input == -9999 or H_input == -9999: return -9999
+
     C_L = 0.1 * P_input / H_input
     
     def residual(Fr):
@@ -433,6 +458,8 @@ def calc_y2_simp(H_input, P_input):
         solve the Bélanger equation:
         Y_2 = Y_1 / 2 * (-1 + np.sqrt(1 + 8 * Fr_1**2))
     """
+    if P_input == -9999 or H_input == -9999: return -9999
+
     y_1 = solve_y1_simp(H_input, P_input)
     Fr_1 = solve_Fr_simp(H_input, P_input)
     
@@ -440,27 +467,8 @@ def calc_y2_simp(H_input, P_input):
 
 
 def calc_yFlip_simp(H_input, P_input):
+    if P_input == -9999 or H_input == -9999: return -9999
     return (H_input + P_input) / 1.1
-
-
-def solve_weir_geom_simp(Q_input, L_input, YT_input, Wse_input):
-    """
-    Solves for Head (H) and Weir Height (P).
-    """
-    
-    total_height = YT_input + Wse_input
-
-    # 1. Solve H analytically
-    H_solution = weir_H_adv(Q_input, L_input, Wse_input, YT_input)
-
-    # 2. Calculate P
-    P_solution = total_height - H_solution
-
-    if P_solution < 0:
-        P_solution = -9999
-        H_solution = -9999
-
-    return H_solution, P_solution
     
 
 def rating_curve_intercepts_simp(L_input: float, P_input: float, a: float, b: float,
@@ -468,6 +476,8 @@ def rating_curve_intercepts_simp(L_input: float, P_input: float, a: float, b: fl
     """
         solves the intercept of the tailwater rating curve and the conjugate and flip rating curves
     """
+    if P_input == -9999: return -9999, -9999
+
     def residual(Q, which):
         H = weir_H_simp(Q, L_input)
         y_t = a * Q**b

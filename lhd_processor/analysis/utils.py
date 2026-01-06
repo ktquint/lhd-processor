@@ -13,6 +13,8 @@ def round_sigfig(num, sig_figs):
 
 def hydraulic_jump_type(y_2, y_t, y_flip):
     """Classifies the hydraulic jump type based on tailwater depth."""
+    if y_2 == -9999 or y_flip == -9999:
+        return 'N/A'
     if y_t < y_2:
         return 'A'
     elif y_t == y_2:
