@@ -165,18 +165,14 @@ def update_dropdown():
         utils.set_status(f"Error updating dropdown: {e}")
 
 
-def process_single_dam_analysis(dam_id, xlsx_path, res_dir):
+def process_single_dam_analysis(dam_id, xlsx_path, res_dir, calc_mode):
     try:
         db = DatabaseManager(xlsx_path)
         # 1. Initialize (Loads geometry only - Fast)
-        dam = AnalysisDam(dam_id, db, base_results_dir=res_dir, calc_mode=calc_mode_var)
+        dam = AnalysisDam(dam_id, db, base_results_dir=res_dir, calc_mode=calc_mode)
 
         # 2. Run Analysis (Calculates P, H, Jumps - Expensive)
-        dam.run_analysis()
-
-        # 3. Extract results to return
-        xs_data = db.xsections[db.xsections['site_id'] == dam_id].to_dict('records')
-        res_data = db.results[db.results['site_id'] == dam_id].to_dict('records')
+        xs_data, res_data = dam.run_analysis()
 
         return True, dam_id, dam.site_data, xs_data, res_data, None
     except Exception as e:
@@ -280,7 +276,7 @@ def generate_summary_charts(db_path, filter_id=None):
 
 
 # --- Threaded Logic ---
-def threaded_analysis():
+def threaded_analysis(mode):
     try:
         xlsx_path = db_entry.get()
         res_dir = res_entry.get()
@@ -294,13 +290,14 @@ def threaded_analysis():
             utils.set_status("No processed dams found.")
             return
 
-        worker_count = (os.cpu_count() - 1) or 1
+        # worker_count = (os.cpu_count() - 1) or 1
+        worker_count = 2
         with LocalCluster(n_workers=worker_count, threads_per_worker=1) as cluster:
             with Client(cluster) as client:
                 utils.set_status(f"Parallelizing analysis across {worker_count} workers...")
 
                 futures = client.map(process_single_dam_analysis, valid_ids,
-                                     xlsx_path=xlsx_path, res_dir=res_dir)
+                                     xlsx_path=xlsx_path, res_dir=res_dir, calc_mode=mode)
 
                 processed_count = 0
                 for future in as_completed(futures):
@@ -335,7 +332,7 @@ def threaded_analysis():
         run_btn.config(state=tk.NORMAL)
 
 
-def threaded_display():
+def threaded_display(mode):
     figs = []
     try:
         xlsx_path = db_entry.get()
@@ -390,7 +387,7 @@ def threaded_display():
                         continue
 
                     # Initialize Dam Object
-                    dam = AnalysisDam(d_id, db, base_results_dir=res_dir)
+                    dam = AnalysisDam(d_id, db, base_results_dir=res_dir, calc_mode=mode)
                     dam.load_results()
 
                     # Helper to add and save figures
@@ -435,9 +432,11 @@ def threaded_display():
 # Thread Starters
 def start_analysis():
     run_btn.config(state=tk.DISABLED)
-    threading.Thread(target=threaded_analysis, daemon=True).start()
+    mode = calc_mode_var.get()
+    threading.Thread(target=threaded_analysis, args=(mode,), daemon=True).start()
 
 
 def start_display():
     display_btn.config(state=tk.DISABLED)
-    threading.Thread(target=threaded_display, daemon=True).start()
+    mode = calc_mode_var.get()
+    threading.Thread(target=threaded_display, args=(mode,), daemon=True).start()

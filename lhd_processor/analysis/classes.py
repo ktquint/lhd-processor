@@ -1,4 +1,5 @@
 import os
+import ast
 import pyproj
 import geoglows
 import numpy as np
@@ -9,7 +10,6 @@ import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
-from scipy.optimize import fsolve
 from matplotlib.ticker import FixedLocator
 from matplotlib_scalebar.scalebar import ScaleBar
 
@@ -17,11 +17,11 @@ from matplotlib_scalebar.scalebar import ScaleBar
 from .hydraulics import (solve_weir_geom_adv,
                          solve_weir_geom_simp,
                          solve_y2_adv,
+                         calc_y2_simp,
                          weir_H_simp,
                          compute_y_flip,
                          solve_y1_adv,
                          solve_y1_simp,
-                         get_xs_props,
                          rating_curve_intercepts_simp,
                          rating_curve_intercept_adv)
 
@@ -64,44 +64,99 @@ class CrossSection:
         self.L = self.parent_dam.weir_length
         self.hydrology = self.parent_dam.hydrology
         self.calc_mode = self.parent_dam.calc_mode
+        self.nwm_id = self.parent_dam.nwm_id
+        self.geoglows_id = self.parent_dam.geoglows_id
 
         # geospatial info
         self.lat = xs_row['Lat']
         self.lon = xs_row['Lon']
 
         # FIX: Handle NaN in Index or Weir Length to prevent "float NaN to int" crash
-        safe_idx = self.index if pd.notnull(self.index) else 1
+        safe_idx = self.index if pd.notnull(self.index) else 0
         safe_L = self.L if pd.notnull(self.L) else 10.0
 
-        if self.index == 0:
+        total_xs = len(self.parent_dam.dam_gdf)
+        max_idx = total_xs - 1
+
+        if safe_idx == max_idx:
             self.location = 'Upstream'
             self.distance = int(safe_L)
             self.fatal_qs = None
         else:
             self.location = 'Downstream'
-            self.distance = int(safe_idx * safe_L)
+            self.distance = int((max_idx - safe_idx) * safe_L)
             self.fatal_qs = self.parent_dam.fatal_flows
 
     def _init_rating_curve(self, xs_row):
         # rating curve equation D = a * Q**b
         val_a = xs_row.get('depth_a', 0)
         val_b = xs_row.get('depth_b', 0)
-        self.a = float(val_a[0]) if isinstance(val_a, list) else float(val_a)
-        self.b = float(val_b[0]) if isinstance(val_b, list) else float(val_b)
+
+        def _parse_val(v):
+            if isinstance(v, str):
+                v = v.strip()
+                # Handle string representation of list like '[1.23]'
+                if v.startswith('[') and v.endswith(']'):
+                    try:
+                        v = ast.literal_eval(v)
+                    except (ValueError, SyntaxError):
+                        pass
+            return float(v[0]) if isinstance(v, list) else float(v)
+
+        self.a = _parse_val(val_a)
+        self.b = _parse_val(val_b)
         # load the dam's flow series
         self.flow_series = self.parent_dam.flow_series
-        self.Qmin = np.min(self.flow_series.dropna().values)
-        self.Qmax = np.max(self.flow_series.dropna().values)
+        
+        if self.flow_series is not None and not self.flow_series.empty:
+            vals = self.flow_series.dropna().values
+            if len(vals) > 0:
+                self.Qmin = np.min(vals)
+                self.Qmax = np.max(vals)
+            else:
+                self.Qmin = 0.0
+                self.Qmax = 100.0
+        else:
+            self.Qmin = 0.0
+            self.Qmax = 100.0
+            
         self.slope = round_sigfig(xs_row['Slope'], 3)
 
     def _init_geometry(self, xs_row):
         # cross-section plot info
-        self.wse = xs_row['Elev']
+        val_elev = xs_row['Elev']
+        if isinstance(val_elev, str):
+            val_elev = val_elev.strip()
+            if val_elev.startswith('[') and val_elev.endswith(']'):
+                try:
+                    val_elev = ast.literal_eval(val_elev)[0]
+                except:
+                    pass
+        self.wse = float(val_elev)
         
         # Raw Profiles (Center -> Outwards)
-        self.y_1_raw = xs_row['XS1_Profile']  # Center -> Left
-        self.y_2_raw = xs_row['XS2_Profile']  # Center -> Right
-        self.dist = xs_row['Ordinate_Dist']
+        def parse_profile(val):
+            if isinstance(val, str):
+                val = val.strip()
+                if val.startswith('[') and val.endswith(']'):
+                    try:
+                        return ast.literal_eval(val)
+                    except (ValueError, SyntaxError):
+                        pass
+            if isinstance(val, (list, np.ndarray)):
+                return val
+            return [] if pd.isna(val) else [val]
+
+        self.y_1_raw = parse_profile(xs_row['XS1_Profile'])  # Center -> Left
+        self.y_2_raw = parse_profile(xs_row['XS2_Profile'])  # Center -> Right
+        
+        val_dist = xs_row['Ordinate_Dist']
+        if isinstance(val_dist, str):
+            try:
+                val_dist = ast.literal_eval(val_dist)
+            except (ValueError, SyntaxError):
+                pass
+        self.dist = float(val_dist[0]) if isinstance(val_dist, list) else float(val_dist)
 
         # --- COORDINATE SYSTEM (0 to Total Width) ---
         # Calculate Offset to shift min_x to 0
@@ -204,9 +259,9 @@ class CrossSection:
 
         ax.plot(self.lateral, self.elevation, color='black', label='Cross-Section with Bathymetry Estimation')
 
-        if self.index > 0:
+        if self.location == 'Downstream':
             try:
-                upstream_xs = self.parent_dam.cross_sections[0]
+                upstream_xs = self.parent_dam.cross_sections[-1]
                 wse_upstream = upstream_xs.wse
 
                 us_x_left = []
@@ -283,8 +338,8 @@ class CrossSection:
         ax.legend(loc='upper right')
 
         if save:
-            fname = f"{'US' if self.index == 0 else 'DS'}_XS_{self.index if self.index > 0 else 'LHD'}_{self.id}.png"
-            if self.index == 0:
+            fname = f"{'US' if self.location == 'Upstream' else 'DS'}_XS_{self.index if self.location == 'Downstream' else 'LHD'}_{self.id}.png"
+            if self.location == 'Upstream':
                 fname = f"US_XS_LHD_{self.id}.png"
             fig.savefig(os.path.join(self.fig_dir, fname), dpi=300, bbox_inches='tight')
             return fig
@@ -323,8 +378,7 @@ class CrossSection:
         for i, Q in enumerate(Qs):
             Y_Flip = compute_y_flip(Q, self.L, self.P)
             # Use shifted profiles
-            Y_Conj1 = solve_y1_adv(Q, self.L, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
-            Y_Conj2 = solve_y2_adv(Q, Y_Conj1, self.y_1_shifted, self.y_2_shifted, self.dist)
+            Y_Conj2 = solve_y2_adv(Q, self.L, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
             Y_Flips.append(Y_Flip)
             Y_Conjugates.append(Y_Conj2)
 
@@ -423,7 +477,7 @@ class Dam:
     def __init__(self, lhd_id, db_manager, base_results_dir, calc_mode):
         self.id = int(lhd_id)
         self.db = db_manager
-        self.results_dir = base_results_dir
+        self.results_dir = os.path.normpath(base_results_dir)
         self.calc_mode = calc_mode
 
         self.site_data = self.db.get_site(self.id)
@@ -436,38 +490,47 @@ class Dam:
         self.longitude = self.site_data['longitude']
         self.weir_length = self.site_data['weir_length']
         self.hydrology = self.site_data.get('streamflow_source', 'National Water Model')
-        self.baseflow = float(self.site_data.get('dem_baseflow', 0))
+        self.nwm_id = self.site_data['reach_id']
+        self.geoglows_id = self.site_data['linkno']
 
-        self.fatal_flows = self.incidents_df['flow'].dropna().tolist()
+        if self.hydrology == 'National Water Model':
+            self.baseflow = float(self.site_data.get('baseflow_nwm', 0))
+            self.fatal_flows = self.incidents_df['flow_nwm'].dropna().tolist()
+        else:
+            self.baseflow = float(self.site_data.get('baseflow_geo', 0))
+            self.fatal_flows = self.incidents_df['flow_geo'].dropna().tolist()
+
         self.fig_dir = os.path.join(self.results_dir, str(self.id), "FIGS")
         os.makedirs(self.fig_dir, exist_ok=True)
 
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(current_dir)
-        comid_path = os.path.join(project_root, 'data', 'comid_table.csv')
-        self.nwm_id = None
-        self.geoglows_id = None
-        if os.path.exists(comid_path):
-            try:
-                comid_df = pd.read_csv(comid_path)
-                comid_df['ID'] = pd.to_numeric(comid_df['ID'], errors='coerce')
-                match = comid_df[comid_df['ID'] == self.id]
-                if not match.empty:
-                    self.nwm_id = match.iloc[0]['reach_id']
-                    self.geoglows_id = match.iloc[0]['linkno']
-            except:
-                pass
 
-        vdt_gpkg = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Local_VDT_Database.gpkg")
-        rc_gpkg = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Local_CurveFile.gpkg")
-        xs_gpkg = os.path.join(self.results_dir, str(self.id), "XS", f"{self.id}_Local_XS_Lines.gpkg")
+        # Helper to check for .gpkg or .shp
+        def check_path(path):
+            # Check if path exists and is not empty (if it's a file)
+            if os.path.exists(path) and os.path.isfile(path) and os.path.getsize(path) > 0:
+                return path
+            
+            # If it's a gpkg, try shp
+            if path.endswith('.gpkg'):
+                shp_path = path.replace('.gpkg', '.shp')
+                if os.path.exists(shp_path) and os.path.isfile(shp_path) and os.path.getsize(shp_path) > 0:
+                    return shp_path
+            
+            # Return original path (will fail later if it doesn't exist)
+            return path
+
+        vdt_gpkg = check_path(os.path.normpath(os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Local_VDT_Database.gpkg")))
+        rc_gpkg = check_path(os.path.normpath(os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Local_Curve.gpkg")))
+        xs_gpkg = check_path(os.path.normpath(os.path.join(self.results_dir, str(self.id), "XS", f"{self.id}_Local_XS.gpkg")))
+        
+        for p in [vdt_gpkg, rc_gpkg, xs_gpkg]:
+            if not os.path.exists(p):
+                raise FileNotFoundError(f"Required file not found: {p}")
+
         self.xs_gpkg = xs_gpkg
 
         self.dam_gdf = merge_arc_results(rc_gpkg, vdt_gpkg, xs_gpkg)
-        self.cross_sections = []
-        for index, row in self.dam_gdf.iterrows():
-            self.cross_sections.append(CrossSection(row, self, index=index))
-            
+
         # --- Initialize Flow Data ---
         self.flow_series = self.get_flow_data()
         if self.flow_series is not None and not self.flow_series.empty:
@@ -477,10 +540,19 @@ class Dam:
             self.Qmin_abs = 0.0
             self.Qmax_abs = 10000.0 # Default fallback
 
+        self.cross_sections = []
+        for index, row in self.dam_gdf.iterrows():
+            self.cross_sections.append(CrossSection(row, self, index=index))
+
     def load_results(self):
         if self.db.xsections.empty:
             return
-        xs_data = self.db.xsections[self.db.xsections['site_id'] == self.id]
+        
+        id_col = 'site_id' if 'site_id' in self.db.xsections.columns else 'dam_id'
+        if id_col not in self.db.xsections.columns:
+            return
+
+        xs_data = self.db.xsections[self.db.xsections[id_col] == self.id]
         if xs_data.empty:
             return
         for xs in self.cross_sections:
@@ -503,13 +575,18 @@ class Dam:
         hydro_results_list = []
         for i, xs in enumerate(self.cross_sections):
             xs_info = {
+                'site_id': self.id,
+                'dam_id': self.id,
                 'xs_index': i,
+                'Slope': xs.slope,
                 'slope': xs.slope,
-                'rating_a': xs.a,
-                'rating_b': xs.b
+                'depth_a': xs.a,
+                'depth_b': xs.b,
+                'P_height': None,
+                'p_height': None
             }
-            if i > 0:
-                delta_wse = self.cross_sections[0].wse - xs.wse
+            if i < len(self.cross_sections) - 1:
+                delta_wse = self.cross_sections[-1].wse - xs.wse
                 y_i = xs.wse - xs.bed_elevation
                 try:
                     if self.calc_mode == "Advanced":
@@ -522,6 +599,7 @@ class Dam:
                         xs.set_dam_height(P_i)
                         xs.set_head(H_i)
                         xs_info['P_height'] = P_i
+                        xs_info['p_height'] = P_i
 
                     elif self.calc_mode == "Simplified":
                         H_i, P_i = solve_weir_geom_simp(self.baseflow, self.weir_length, y_i, delta_wse)
@@ -531,10 +609,12 @@ class Dam:
                         xs.set_dam_height(P_i)
                         xs.set_head(H_i)
                         xs_info['P_height'] = P_i
+                        xs_info['p_height'] = P_i
 
                 except Exception as e:
                     print(f"Solver failed for Dam {self.id} XS {i}: {e}")
                     xs_info['P_height'] = None
+                    xs_info['p_height'] = None
 
                 if xs.P:
                     try:
@@ -544,42 +624,38 @@ class Dam:
                     except:
                         pass
                 for _, inc_row in self.incidents_df.iterrows():
-                    Q = inc_row['flow']
+                    if self.hydrology == 'National Water Model':
+                        Q = inc_row['flow_nwm']
+                    else:
+                        Q = inc_row['flow_geo']
                     date = inc_row['date']
                     if pd.notna(Q) and xs.P:
                         try:
-                            g = 9.81
                             y_t = xs.get_tailwater_depth(Q)
                             # Updated to pass shifted profiles
-                            y_1 = solve_y1_adv(Q, xs.L, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
-                            y_2 = solve_y2_adv(Q, y_1, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                            if self.calc_mode == "Advanced":
+                                y_2 = solve_y2_adv(Q, xs.L, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                            else:
+                                H = weir_H_simp(Q, xs.L)
+                                y_2 = calc_y2_simp(H, xs.P)
 
-                            # Calculate debug props
-                            A1, yc1 = get_xs_props(y_1, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
-                            M1 = (Q ** 2 / (g * A1)) + (A1 * yc1) if A1 > 1e-6 else 0
-
-                            A2, yc2 = get_xs_props(y_2, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
-                            M2 = (Q ** 2 / (g * A2)) + (A2 * yc2) if A2 > 1e-6 else 0
 
                             y_flip = compute_y_flip(Q, xs.L, xs.P)
                             jump = hydraulic_jump_type(y_2, y_t, y_flip)
                             hydro_results_list.append({
+                                'site_id': self.id,
+                                'dam_id': self.id,
                                 'date': date,
                                 'xs_index': i,
                                 'y_t': y_t,
                                 'y_flip': y_flip,
                                 'y_2': y_2,
                                 'jump_type': jump,
-                                'y_1': y_1,
-                                'A1': A1,
-                                'A2': A2,
-                                'M1': M1,
-                                'M2': M2
                             })
                         except:
                             pass
             xs_data_list.append(xs_info)
-        self.db.update_analysis_results(self.id, xs_data_list, hydro_results_list)
+        return xs_data_list, hydro_results_list
 
     def get_flow_data(self):
         flow_series = None
@@ -647,8 +723,8 @@ class Dam:
         ax.set_ylim(miny - buffer, maxy + buffer)
         ctx.add_basemap(ax, crs='EPSG:3857', source="Esri.WorldImagery", zorder=0)
 
-        gdf_upstream = xs_gdf.iloc[[0]]
-        gdf_downstream = xs_gdf.iloc[1:]
+        gdf_upstream = xs_gdf.iloc[[-1]]
+        gdf_downstream = xs_gdf.iloc[:-1]
         strm_gdf.plot(ax=ax, color='green', markersize=100, edgecolor='black', zorder=2, label="Flowline")
         gdf_upstream.plot(ax=ax, color='red', markersize=100, edgecolor='black', zorder=2, label="Upstream")
         gdf_downstream.plot(ax=ax, color='dodgerblue', markersize=100, edgecolor='black', zorder=2, label="Downstream")
@@ -687,16 +763,16 @@ class Dam:
         ax.plot(database_df.index, database_df['DEM_Elev'], color='dodgerblue', label='DEM Elevation')
         ax.plot(database_df.index, database_df['BaseElev'], color='black', label='Bed Elevation')
 
-        upstream_xs = self.dam_gdf.iloc[0]
+        upstream_xs = self.dam_gdf.iloc[-1]
         upstream_idx = \
             database_df[(database_df['Row'] == upstream_xs['Row']) & (database_df['Col'] == upstream_xs['Col'])].index[
                 0]
         ax.axvline(x=upstream_idx, color='red', linestyle='--', label=f'Upstream Cross-Section')
 
-        for i in range(1, len(self.dam_gdf)):
+        for i in range(len(self.dam_gdf) - 1):
             ds_xs = self.dam_gdf.iloc[i]
             ds_idx = database_df[(database_df["Row"] == ds_xs['Row']) & (database_df["Col"] == ds_xs['Col'])].index[0]
-            label = 'Downstream Cross-Sections' if i == 1 else ""
+            label = 'Downstream Cross-Sections' if i == 0 else ""
             ax.axvline(x=ds_idx, color='cyan', linestyle='--', label=label)
 
         ax.legend()

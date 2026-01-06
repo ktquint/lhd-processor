@@ -88,6 +88,26 @@ def merge_arc_results(curve_file: str, local_vdt: str, cross_section: str) -> Un
         if col in xs_gdf.columns:
             xs_gdf[col] = xs_gdf[col].apply(lambda x: ast.literal_eval(x) if pd.notna(x) and isinstance(x, str) else x)
 
+    # Clean scalar columns that might be wrapped in lists (e.g. "[0.5]" -> 0.5)
+    def clean_scalar(x):
+        if isinstance(x, str):
+            x = x.strip()
+            if x.startswith('[') and x.endswith(']'):
+                try:
+                    val = ast.literal_eval(x)
+                    return val[0] if isinstance(val, list) and len(val) > 0 else val
+                except:
+                    pass
+        return x
+
+    for col in ['Elev', 'Slope', 'Ordinate_Dist', 'depth_a', 'depth_b', 'tw_a', 'tw_b', 'vel_a', 'vel_b']:
+        if col in xs_gdf.columns:
+            xs_gdf[col] = xs_gdf[col].apply(clean_scalar)
+        if col in rc_gdf.columns:
+            rc_gdf[col] = rc_gdf[col].apply(clean_scalar)
+        if col in vdt_gdf.columns:
+            vdt_gdf[col] = vdt_gdf[col].apply(clean_scalar)
+
     # Drop duplicates
     if 'Ordinate_Dist.1' in xs_gdf.columns and 'Ordinate_Dist' in xs_gdf.columns:
         if xs_gdf['Ordinate_Dist'].equals(xs_gdf['Ordinate_Dist.1']):
