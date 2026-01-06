@@ -11,6 +11,10 @@ g = 9.81 # m/s**2
 C_W = 0.62
 
 
+def weir_coef_adv(H_input, P_input):
+    return 0.611 + 0.075 * H_input/P_input
+
+
 def solve_yc(Q, xs1, xs2, dist):
     """
         Finds the critical depth (yc) where the Froude number is exactly 1.0.
@@ -100,7 +104,7 @@ def get_top_width(water_depth, xs1, xs2, dist):
     return abs(x_r[-1] - x_l[-1])
 
 
-def get_geometry_props(water_depth, xs1, xs2, dist):
+def get_xs_props(water_depth, xs1, xs2, dist):
     """
     Calculates Area (A) and Centroid Depth (y_cent).
     """
@@ -126,7 +130,7 @@ def get_geometry_props(water_depth, xs1, xs2, dist):
     depths = water_depth - y_combined
     depths[depths < 0] = 0
 
-    Area = np.trapezoid(depths, x_combined)
+    Area = np.trapz(depths, x_combined)
 
     if Area <= 0:
         return 0.0001, 0.0001
@@ -134,7 +138,7 @@ def get_geometry_props(water_depth, xs1, xs2, dist):
     # 4. Calculate Centroid
     integrand = 0.5 * depths ** 2
 
-    Moment_surface = np.trapezoid(integrand, x_combined)
+    Moment_surface = np.trapz(integrand, x_combined)
 
     y_cent = Moment_surface / Area
 
@@ -147,7 +151,7 @@ def calc_froude_custom(Q, y, xs1, xs2, dist):
     """
     if y <= 0: return 0
 
-    A, _ = get_geometry_props(y, xs1, xs2, dist)
+    A, _ = get_xs_props(y, xs1, xs2, dist)
     T = get_top_width(y, xs1, xs2, dist)
 
     if A <= 0 or T <= 0: return 0
@@ -164,7 +168,7 @@ def solve_y1_downstream(Q, L, P, xs1, xs2, dist):
     Uses critical depth as a physical boundary for the root search.
     """
     # 1. Calculate Available Total Energy (Bernoulli)
-    H = weir_H(Q, L)
+    H = weir_H_simp(Q, L)
     A_o = L * H
     V_o = Q / A_o
     E_total = P + H + (V_o ** 2) / (2 * g)
@@ -172,7 +176,7 @@ def solve_y1_downstream(Q, L, P, xs1, xs2, dist):
     # 2. Define Residual Function (E_calc - E_total)
     def energy_residual(y):
         if y <= 0: return 1e9
-        A, _ = get_geometry_props(y, xs1, xs2, dist)
+        A, _ = get_xs_props(y, xs1, xs2, dist)
         if A <= 0: return 1e9
 
         V = Q / A
@@ -205,7 +209,7 @@ def solve_y1_downstream(Q, L, P, xs1, xs2, dist):
 
 def solve_y2_jump(Q, y1, xs1, xs2, dist):
     # 1. Calculate Momentum at y1 (Supercritical side)
-    A1, y_cj1 = get_geometry_props(y1, xs1, xs2, dist)
+    A1, y_cj1 = get_xs_props(y1, xs1, xs2, dist)
 
     # Safety check for bad y1
     if A1 <= 0.0001: return 0.0
@@ -214,7 +218,7 @@ def solve_y2_jump(Q, y1, xs1, xs2, dist):
 
     def momentum_residual(y_candidate):
         if y_candidate <= 0: return -1e9
-        A2, y_cj2 = get_geometry_props(y_candidate, xs1, xs2, dist)
+        A2, y_cj2 = get_xs_props(y_candidate, xs1, xs2, dist)
         if A2 <= 0: return -1e9
         M2 = (Q ** 2 / (g * A2)) + (A2 * y_cj2)
         return M2 - M1
@@ -253,50 +257,224 @@ def Fr_eq(Fr, x):
     return 1 - term1 + term2
 
 
-def weir_H(Q, L):
+def weir_H_simp(Q, L):
     """
     Analytically solves for Head (H).
     """
     H = ((3/2) * (Q/L) / C_W / np.sqrt(2 * g))**(2/3)
     return H
 
+def weir_H_adv(Q_input, L_input, Delta_wse_input, Y_T_input):
+    """
+    Analytically solves for Head (H).
+    using Q = 2/3 * C_W * L * np.sqrt(2*g) * H^(3/2)
+    C_W = 0.611 + 0.075 * H/P
+    Delta_wse is positive btw
+    """
+    # start with the simplified H calc
+    H_guess = weir_H_simp(Q_input, L_input)
+    
+    def residual(H):
+        P = Delta_wse_input + Y_T_input - H
+        if P <= 0:
+            return 1e9
+        
+        C_W_new = weir_coef_adv(H, P)
+        
+        Q_calc = (2/3) * C_W_new * L_input * np.sqrt(2 * g) * (H ** 1.5)
+        
+        return Q_calc - Q_input
+    
+    try:
+        # find when the residual is 0
+        sol = root_scalar(residual, bracket=(0.5 * H_guess, 2.0 * H_guess), method='brentq')
+        return sol.root
+    except ValueError:
+        return H_guess
+
 
 def compute_y_flip(Q, L, P):
-    H = weir_H(Q, L)
+    H = weir_H_simp(Q, L)
     return (H + P) / 1.1
 
 
-def rating_curve_intercept(Q: float, L: float, P: float, a: float, b: float,
-                           xs1: list[float], xs2: list[float], dist: float, which: str) -> float:
+def rating_curve_intercept_adv(L: float, P: float, a: float, b: float,
+                               xs1: list[float], xs2: list[float], dist: float,
+                               Q_min_search: float, Q_max_search: float) -> tuple[float, float]:
+    """
+    Solves the intercept of the tailwater rating curve and the conjugate and flip rating curves
+    using advanced hydraulic calculations (XS geometry).
+    """
+    def residual(Q, which):
+        if Q <= 0.001: return 1e6
+        
+        y_t = a * Q ** b
+        
+        if which == 'flip':
+            y_target = compute_y_flip(Q, L, P)
+        elif which == 'conjugate':
+            y_1 = solve_y1_downstream(Q, L, P, xs1, xs2, dist)
+            y_target = solve_y2_jump(Q, y_1, xs1, xs2, dist)
+        else:
+            return 1e6
+            
+        return y_target - y_t
 
-    y_flip = compute_y_flip(Q, L, P)
-    y_1 = solve_y1_downstream(Q, L, P, xs1, xs2, dist)
-    y_2 = solve_y2_jump(Q, y_1, xs1, xs2, dist)
+    # Find Q_max (Flip intersection)
+    try:
+        sol_max = root_scalar(lambda q: residual(q, 'flip'), bracket=(Q_min_search, Q_max_search), method='brentq')
+        Q_max = sol_max.root
+    except ValueError:
+        Q_max = -9999.0 # Flag for no intersection
 
-    y_t = a * Q ** b
+    # Find Q_min (Conjugate intersection)
+    try:
+        sol_min = root_scalar(lambda q: residual(q, 'conjugate'), bracket=(Q_min_search, Q_max_search), method='brentq')
+        Q_min = sol_min.root
+    except ValueError:
+        Q_min = -9999.0 # Flag for no intersection
+        
+    return Q_min, Q_max
 
-    if which == 'flip':
-        return y_flip - y_t
-    elif which == 'conjugate':
-        return y_2 - y_t
-    else:
-        raise ValueError("which must be 'flip' or 'conjugate'")
 
-
-def solve_weir_geometry(Q_input, L_input, YT_input, Wse_input):
+def solve_weir_geom_adv(Q_input, L_input, YT_input, Wse_input):
     """
     Solves for Head (H) and Weir Height (P).
     """
     total_height = YT_input + Wse_input
 
     # 1. Solve H analytically
-    H_solution = weir_H(Q_input, L_input)
+    H_solution = weir_H_simp(Q_input, L_input)
 
     # 2. Calculate P
     P_solution = total_height - H_solution
 
     if P_solution < 0:
-        P_solution = 0.1
-        H_solution = total_height - P_solution
+        P_solution = -9999
+        H_solution = -9999
 
     return H_solution, P_solution
+
+# Simplified Calculations
+
+def solve_y1_simp(H_input, P_input):
+    """
+        solves the polynomial
+        (Y_1/H)**3 - (1 + P/H) * (Y_1/H)**2 + 4/9 * C_W**2 * (1 + C_L) = 0
+        where 
+            C_L = 0.1 * P/H
+    """
+    C_L = 0.1 * P_input / H_input
+    
+    # Coefficients for the cubic equation: ax^3 + bx^2 + cx + d = 0
+    # x = Y_1 / H
+    a = 1
+    b = -(1 + P_input / H_input)
+    c = 0
+    d = (4/9) * (C_W ** 2) * (1 + C_L)
+    
+    # Find roots
+    roots = np.roots([a, b, c, d])
+    
+    # Filter for real, positive roots
+    real_roots = [r.real for r in roots if np.isreal(r) and r.real > 0]
+    
+    if not real_roots:
+        return 0.1 # Fallback
+        
+    # The smallest positive root the supercritical depth (y1)
+    # The largest is usually the subcritical depth (y0)
+    y1_ratio = min(real_roots)
+    
+    return y1_ratio * H_input
+
+def solve_Fr_simp(H_input, P_input):
+    """
+        solves the equation:
+        1 - (9/(4 * C_W**2) * 0.5 * Fr**2)**(1/3) * (1 + P/H)
+            + 0.5 * Fr**2 * (1 + C_L) = 0
+    """
+    C_L = 0.1 * P_input / H_input
+    
+    def residual(Fr):
+        term1 = ( (9 / (4 * C_W**2)) * 0.5 * Fr**2 )**(1/3) * (1 + P_input/H_input)
+        term2 = 0.5 * Fr**2 * (1 + C_L)
+        return 1 - term1 + term2
+        
+    try:
+        # Froude number is typically between 1 (critical) and 20 (very fast)
+        sol = root_scalar(residual, bracket=(1.0, 20.0), method='brentq')
+        return sol.root
+    except ValueError:
+        return 1.0 # Fallback to critical flow
+
+
+def calc_y2_simp(H_input, P_input):
+    """
+        solve the Bélanger equation:
+        Y_2 = Y_1 / 2 * (-1 + np.sqrt(1 + 8 * Fr_1**2))
+    """
+    y_1 = solve_y1_simp(H_input, P_input)
+    Fr_1 = solve_Fr_simp(H_input, P_input)
+    
+    return (y_1/2) * (-1 + np.sqrt(1 + 8 * Fr_1**2))
+
+
+def calc_yFlip_simp(H_input, P_input):
+    return (H_input + P_input) / 1.1
+
+
+def solve_weir_geom_simp(Q_input, L_input, YT_input, Wse_input):
+    """
+    Solves for Head (H) and Weir Height (P).
+    """
+    
+    total_height = YT_input + Wse_input
+
+    # 1. Solve H analytically
+    H_solution = weir_H_adv(Q_input, L_input, Wse_input, YT_input)
+
+    # 2. Calculate P
+    P_solution = total_height - H_solution
+
+    if P_solution < 0:
+        P_solution = -9999
+        H_solution = -9999
+
+    return H_solution, P_solution
+    
+
+def rating_curve_intercepts_simp(L_input: float, P_input: float, a: float, b: float,
+                                 Q_min_search: float, Q_max_search: float) -> tuple[float, float]:
+    """
+        solves the intercept of the tailwater rating curve and the conjugate and flip rating curves
+    """
+    def residual(Q, which):
+        H = weir_H_simp(Q, L_input)
+        y_t = a * Q**b
+        
+        if which == 'flip':
+            y_target = calc_yFlip_simp(H, P_input)
+        elif which == 'conjugate':
+            y_target = calc_y2_simp(H, P_input)
+        else:
+            return 1e6
+            
+        return y_target - y_t
+
+    # Find Q_max (Flip intersection)
+    try:
+        # Search for root where y_flip - y_t = 0
+        sol_max = root_scalar(lambda q: residual(q, 'flip'), bracket=(Q_min_search, Q_max_search), method='brentq')
+        Q_max = sol_max.root
+    except ValueError:
+        Q_max = -9999.0 # Flag for no intersection
+
+    # Find Q_min (Conjugate intersection)
+    try:
+        sol_min = root_scalar(lambda q: residual(q, 'conjugate'), bracket=(Q_min_search, Q_max_search), method='brentq')
+        Q_min = sol_min.root
+    except ValueError:
+        Q_min = -9999.0 # Flag for no intersection
+        
+    return Q_min, Q_max

@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import contextily as ctx
+import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
@@ -13,12 +14,15 @@ from matplotlib.ticker import FixedLocator
 from matplotlib_scalebar.scalebar import ScaleBar
 
 # Internal imports
-from .hydraulics import (solve_weir_geometry,
+from .hydraulics import (solve_weir_geom_adv,
+                         solve_weir_geom_simp,
                          solve_y2_jump,
-                         weir_H,
+                         weir_H_simp,
                          compute_y_flip,
                          solve_y1_downstream,
-                         get_geometry_props)
+                         solve_y1_simp,
+                         get_xs_props,
+                         rating_curve_intercepts_simp)
 
 from .utils import (merge_arc_results,
                     merge_databases,
@@ -28,17 +32,41 @@ from .utils import (merge_arc_results,
 
 
 class CrossSection:
-    def __init__(self, index, xs_row, parent_dam):
+    INVALID_THRESHOLD = -1e5
+
+    def __init__(self, xs_row, parent_dam, index=None):
         self.parent_dam = parent_dam
+        
+        # If index is not provided, try to get it from the row (name/index)
+        if index is None:
+            if hasattr(xs_row, 'name'):
+                self.index = xs_row.name
+            else:
+                # Fallback if no index is provided and row has no name
+                self.index = 0 
+        else:
+            self.index = index
+        
+        self._init_metadata(xs_row)
+        self._init_rating_curve(xs_row)
+        self._init_geometry(xs_row)
+        self._init_hydraulic_profiles()
+        self._init_vdt_data(xs_row)
+
+        self.P = None
+        self.H = None
+
+
+    def _init_metadata(self, xs_row):
         self.id = self.parent_dam.id
         self.fig_dir = self.parent_dam.fig_dir
         self.L = self.parent_dam.weir_length
         self.hydrology = self.parent_dam.hydrology
+        self.calc_mode = self.parent_dam.calc_mode
 
         # geospatial info
         self.lat = xs_row['Lat']
         self.lon = xs_row['Lon']
-        self.index = index
 
         # FIX: Handle NaN in Index or Weir Length to prevent "float NaN to int" crash
         safe_idx = self.index if pd.notnull(self.index) else 1
@@ -53,18 +81,22 @@ class CrossSection:
             self.distance = int(safe_idx * safe_L)
             self.fatal_qs = self.parent_dam.fatal_flows
 
-        # Legacy rating curve info
+    def _init_rating_curve(self, xs_row):
+        # rating curve equation D = a * Q**b
         val_a = xs_row.get('depth_a', 0)
         val_b = xs_row.get('depth_b', 0)
         self.a = float(val_a[0]) if isinstance(val_a, list) else float(val_a)
         self.b = float(val_b[0]) if isinstance(val_b, list) else float(val_b)
-        self.max_Q = xs_row['QMax']
+        # load the dam's flow series
+        self.flow_series = self.parent_dam.flow_series
+        self.Qmin = np.min(self.flow_series.dropna().values)
+        self.Qmax = np.max(self.flow_series.dropna().values)
         self.slope = round_sigfig(xs_row['Slope'], 3)
 
+    def _init_geometry(self, xs_row):
         # cross-section plot info
         self.wse = xs_row['Elev']
-        INVALID_THRESHOLD = -1e5
-
+        
         # Raw Profiles (Center -> Outwards)
         self.y_1_raw = xs_row['XS1_Profile']  # Center -> Left
         self.y_2_raw = xs_row['XS2_Profile']  # Center -> Right
@@ -81,14 +113,14 @@ class CrossSection:
         # --- WATER SURFACE (Center-Out Logic) ---
         wse_x_left = []
         for i, elev in enumerate(self.y_1_raw):
-            if elev <= self.wse and elev > INVALID_THRESHOLD:
+            if self.wse >= elev > self.INVALID_THRESHOLD:
                 wse_x_left.append(self.x_1_coords[i])
             else:
                 break
 
         wse_x_right = []
         for i, elev in enumerate(self.y_2_raw):
-            if elev <= self.wse and elev > INVALID_THRESHOLD:
+            if self.wse >= elev > self.INVALID_THRESHOLD:
                 wse_x_right.append(self.x_2_coords[i])
             else:
                 break
@@ -103,7 +135,7 @@ class CrossSection:
         x_clean = []
         y_clean = []
         for xi, yi in zip(x_full, y_full):
-            if yi > INVALID_THRESHOLD:
+            if yi > self.INVALID_THRESHOLD:
                 x_clean.append(xi)
                 y_clean.append(yi)
 
@@ -112,25 +144,24 @@ class CrossSection:
         self.elevation_shifted = self.elevation - self.bed_elevation
         self.lateral = np.array(x_clean)
 
+    def _init_hydraulic_profiles(self):
         # --- PREPARE HYDRAULIC PROFILES (Shifted & Cleaned) ---
         # Creates relative depth profiles (Depth = Elev - Bed_Elev) for the solver.
-        def _clean_shift(profile, bed):
-            valid = []
-            if not profile: return np.array([0.0, 0.0])
-            for v in profile:
-                if v <= INVALID_THRESHOLD:
-                    break
-                valid.append(v)
-            if not valid:
-                return np.array([0.0, 0.0])
-            return np.array(valid) - bed
+        self.y_1_shifted = self._clean_shift(self.y_1_raw, self.bed_elevation)
+        self.y_2_shifted = self._clean_shift(self.y_2_raw, self.bed_elevation)
 
-        self.y_1_shifted = _clean_shift(self.y_1_raw, self.bed_elevation)
-        self.y_2_shifted = _clean_shift(self.y_2_raw, self.bed_elevation)
+    def _clean_shift(self, profile, bed):
+        valid = []
+        if not profile: return np.array([0.0, 0.0])
+        for v in profile:
+            if v <= self.INVALID_THRESHOLD:
+                break
+            valid.append(v)
+        if not valid:
+            return np.array([0.0, 0.0])
+        return np.array(valid) - bed
 
-        self.P = None
-        self.H = None
-
+    def _init_vdt_data(self, xs_row):
         # --- LOAD VDT DATA ---
         q_list = []
         wse_list = []
@@ -197,7 +228,7 @@ class CrossSection:
                     Q_b = self.parent_dam.baseflow
                     y_t = self.wse - self.bed_elevation
                     delta_wse = wse_upstream - self.wse
-                    H, P = solve_weir_geometry(Q_b, self.L, y_t, delta_wse)
+                    H, P = solve_weir_geom_adv(Q_b, self.L, y_t, delta_wse)
 
                     # --- ADDED: Calculate and Plot Sequent Depth (y2) ---
                     y_1_calc = solve_y1_downstream(Q_b, self.L, P, self.y_1_shifted, self.y_2_shifted, self.dist)
@@ -331,33 +362,17 @@ class CrossSection:
             return None
 
     def get_dangerous_flow_range(self):
-        def obj_func(Q_guess, which):
-            Q = Q_guess[0] if isinstance(Q_guess, (list, np.ndarray)) else Q_guess
-            if Q <= 0.001: return 1e6
-            y_t = self.get_tailwater_depth(Q)
-            if which == 'flip':
-                y_target = compute_y_flip(Q, self.L, self.P)
-            elif which == 'conjugate':
-                # Use shifted profiles
-                y_1 = solve_y1_downstream(Q, self.L, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
-                y_target = solve_y2_jump(Q, y_1, self.y_1_shifted, self.y_2_shifted, self.dist)
-            else:
-                return 1e6
-            return y_target - y_t
+        if self.calc_mode == "Advanced":
+            return 0,10
+        elif self.calc_mode == "Simplified":
+            return rating_curve_intercepts_simp(self.L, self.P, self.a, self.b,
+                                                self.Qmin, self.Qmax)
+        else:
+            return None
 
-        Q_i = np.array([1.0])
-        try:
-            Q_max = fsolve(obj_func, Q_i, args=('flip',))[0]
-        except Exception:
-            Q_max = self.max_Q
-        try:
-            Q_min = fsolve(obj_func, Q_i, args=('conjugate',))[0]
-        except Exception:
-            Q_min = 0.0
-        return Q_min, Q_max
 
     def plot_fdc(self, ax: Axes):
-        flow_data = self.parent_dam.get_flow_data()
+        flow_data = self.parent_dam.flow_series
         if flow_data is None or flow_data.empty:
             print(f"No flow data available to plot FDC for Dam {self.id}")
             return
@@ -375,6 +390,10 @@ class CrossSection:
             Q_conj, Q_flip = self.get_dangerous_flow_range()
             Q_conj *= 35.315
             Q_flip *= 35.315
+            
+            # Use parent dam's absolute min/max to clamp or validate
+            # (Optional: You could clamp Q_conj/Q_flip here if they are outside observed range)
+
             if Q_conj > 1 and Q_flip > 1:
                 P_flip = get_prob_from_Q(Q_flip, fdc_df)
                 P_conj = get_prob_from_Q(Q_conj, fdc_df)
@@ -399,10 +418,11 @@ class CrossSection:
 
 
 class Dam:
-    def __init__(self, lhd_id, db_manager, base_results_dir):
+    def __init__(self, lhd_id, db_manager, base_results_dir, calc_mode):
         self.id = int(lhd_id)
         self.db = db_manager
         self.results_dir = base_results_dir
+        self.calc_mode = calc_mode
 
         self.site_data = self.db.get_site(self.id)
         self.incidents_df = self.db.get_site_incidents(self.id)
@@ -444,7 +464,16 @@ class Dam:
         self.dam_gdf = merge_arc_results(rc_gpkg, vdt_gpkg, xs_gpkg)
         self.cross_sections = []
         for index, row in self.dam_gdf.iterrows():
-            self.cross_sections.append(CrossSection(index, row, self))
+            self.cross_sections.append(CrossSection(row, self, index=index))
+            
+        # --- Initialize Flow Data ---
+        self.flow_series = self.get_flow_data()
+        if self.flow_series is not None and not self.flow_series.empty:
+            self.Qmin_abs = self.flow_series.min()
+            self.Qmax_abs = self.flow_series.max()
+        else:
+            self.Qmin_abs = 0.0
+            self.Qmax_abs = 10000.0 # Default fallback
 
     def load_results(self):
         if self.db.xsections.empty:
@@ -456,17 +485,18 @@ class Dam:
             row = xs_data[xs_data['xs_index'] == xs.index]
             if not row.empty:
                 try:
+                    # this should never happen lol
                     p_val = row.iloc[0]['P_height']
                     if pd.notnull(p_val):
                         P = float(p_val)
                         xs.set_dam_height(P)
                         if self.baseflow > 0:
-                            H = weir_H(self.baseflow, self.weir_length)
+                            H = weir_H_simp(self.baseflow, self.weir_length)
                             xs.set_head(H)
                 except Exception as e:
                     print(f"Error loading parameters for XS {xs.index}: {e}")
 
-    def run_analysis(self, est_dam=True):
+    def run_analysis(self):
         xs_data_list = []
         hydro_results_list = []
         for i, xs in enumerate(self.cross_sections):
@@ -477,11 +507,11 @@ class Dam:
                 'rating_b': xs.b
             }
             if i > 0:
-                if est_dam:
-                    delta_wse = self.cross_sections[0].wse - xs.wse
-                    y_i = xs.wse - xs.bed_elevation
-                    try:
-                        H_i, P_i = solve_weir_geometry(self.baseflow, self.weir_length, y_i, delta_wse)
+                delta_wse = self.cross_sections[0].wse - xs.wse
+                y_i = xs.wse - xs.bed_elevation
+                try:
+                    if self.calc_mode == "Advanced":
+                        H_i, P_i = solve_weir_geom_adv(self.baseflow, self.weir_length, y_i, delta_wse)
                         # Updated to pass shifted profiles
                         y_1 = solve_y1_downstream(self.baseflow, self.weir_length, P_i, xs.y_1_shifted, xs.y_2_shifted,
                                                   xs.dist)
@@ -490,13 +520,19 @@ class Dam:
                         xs.set_dam_height(P_i)
                         xs.set_head(H_i)
                         xs_info['P_height'] = P_i
-                    except Exception as e:
-                        print(f"Solver failed for Dam {self.id} XS {i}: {e}")
-                        xs_info['P_height'] = None
-                else:
-                    known_p = self.site_data.get('P_known', 2.0)
-                    xs.set_dam_height(known_p)
-                    xs_info['P_height'] = known_p
+
+                    elif self.calc_mode == "Simplified":
+                        H_i, P_i = solve_weir_geom_simp(self.baseflow, self.weir_length, y_i, delta_wse)
+                        y_1 = solve_y1_simp(H_i, P_i)
+                        if y_1 > P_i:
+                            print(f"Warning: Dam {self.id} XS {i} appears drowned.")
+                        xs.set_dam_height(P_i)
+                        xs.set_head(H_i)
+                        xs_info['P_height'] = P_i
+
+                except Exception as e:
+                    print(f"Solver failed for Dam {self.id} XS {i}: {e}")
+                    xs_info['P_height'] = None
 
                 if xs.P:
                     try:
@@ -517,10 +553,10 @@ class Dam:
                             y_2 = solve_y2_jump(Q, y_1, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
 
                             # Calculate debug props
-                            A1, yc1 = get_geometry_props(y_1, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                            A1, yc1 = get_xs_props(y_1, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
                             M1 = (Q ** 2 / (g * A1)) + (A1 * yc1) if A1 > 1e-6 else 0
 
-                            A2, yc2 = get_geometry_props(y_2, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                            A2, yc2 = get_xs_props(y_2, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
                             M2 = (Q ** 2 / (g * A2)) + (A2 * yc2) if A2 > 1e-6 else 0
 
                             y_flip = compute_y_flip(Q, xs.L, xs.P)
@@ -550,17 +586,30 @@ class Dam:
                 try:
                     current_dir = os.path.dirname(os.path.abspath(__file__))
                     project_root = os.path.dirname(current_dir)
-                    parquet_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.parquet')
-                    if os.path.exists(parquet_path):
-                        df = pd.read_parquet(parquet_path)
-                        if 'feature_id' in df.index.names:
-                            flow_series = df.xs(int(self.nwm_id), level='feature_id')['streamflow']
+                    zarr_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.zarr')
+                    if os.path.exists(zarr_path):
+                        ds = xr.open_zarr(zarr_path)
+                        if 'streamflow' in ds:
+                            # Assuming the zarr structure has feature_id as a dimension or coordinate
+                            # and we want to select by it.
+                            # Adjust selection logic based on actual Zarr structure if needed.
+                            # Typically: ds.sel(feature_id=int(self.nwm_id)).streamflow.to_series()
+                            # But let's be safe and check if feature_id is a dim.
+                            
+                            # Note: xarray selection is lazy, so this is efficient.
+                            try:
+                                flow_series = ds.sel(feature_id=int(self.nwm_id))['streamflow'].to_series()
+                            except Exception as e:
+                                print(f"Error selecting ID {self.nwm_id} from Zarr: {e}")
+
                 except Exception as e:
-                    print(f"Error reading NWM data: {e}")
+                    print(f"Error reading NWM Zarr data: {e}")
         elif self.hydrology == 'GEOGLOWS':
             if self.geoglows_id and not pd.isna(self.geoglows_id):
                 try:
-                    df = geoglows.data.retrospective(river_id=int(self.geoglows_id), bias_corrected=True)
+                    df = geoglows.data.retrospective(river_id=int(self.geoglows_id),
+                                                     resolution='daily',
+                                                     bias_corrected=True)
                     flow_series = df.iloc[:, 0]
                 except Exception as e:
                     print(f"Error fetching GEOGLOWS data: {e}")

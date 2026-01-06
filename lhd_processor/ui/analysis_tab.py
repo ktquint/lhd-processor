@@ -17,6 +17,7 @@ res_entry = None
 run_btn = None
 dam_dropdown = None
 display_btn = None
+calc_mode_var = None
 
 # Checkbox Vars
 chk_xs = None
@@ -30,6 +31,7 @@ chk_bar = None
 def setup_analysis_tab(parent_tab):
     global db_entry, res_entry, run_btn, dam_dropdown, display_btn
     global chk_xs, chk_rc, chk_map, chk_wsp, chk_fdc, chk_bar
+    global calc_mode_var
 
     # --- Step 3 Frame ---
     path_frame = ttk.LabelFrame(parent_tab, text="Step 3: Analyze Results")
@@ -48,9 +50,19 @@ def setup_analysis_tab(parent_tab):
     res_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
     ttk.Button(path_frame, text="Select...", command=select_res).grid(row=1, column=2, padx=5, pady=5)
 
-    # Row 2: Run Button
+    # Row 2: Calculation Mode
+    calc_mode_var = tk.StringVar(value="Advanced")
+    ttk.Label(path_frame, text="Calculation Mode:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+
+    mode_frame = ttk.Frame(path_frame)
+    mode_frame.grid(row=2, column=1, columnspan=2, sticky=tk.W)
+
+    ttk.Radiobutton(mode_frame, text="Advanced", variable=calc_mode_var, value="Advanced").pack(side=tk.LEFT, padx=(0, 10))
+    ttk.Radiobutton(mode_frame, text="Simplified", variable=calc_mode_var, value="Simplified").pack(side=tk.LEFT)
+
+    # Row 3: Run Button
     run_btn = ttk.Button(path_frame, text="3. Analyze & Save All Dam Data", command=start_analysis)
-    run_btn.grid(row=2, column=0, columnspan=3, padx=5, pady=10, sticky=tk.EW)
+    run_btn.grid(row=3, column=0, columnspan=3, padx=5, pady=10, sticky=tk.EW)
 
     # --- Figure Frame ---
     fig_frame = ttk.LabelFrame(parent_tab, text="Select Figures to Display")
@@ -157,10 +169,10 @@ def process_single_dam_analysis(dam_id, xlsx_path, res_dir):
     try:
         db = DatabaseManager(xlsx_path)
         # 1. Initialize (Loads geometry only - Fast)
-        dam = AnalysisDam(dam_id, db, base_results_dir=res_dir)
+        dam = AnalysisDam(dam_id, db, base_results_dir=res_dir, calc_mode=calc_mode_var)
 
         # 2. Run Analysis (Calculates P, H, Jumps - Expensive)
-        dam.run_analysis(est_dam=True)
+        dam.run_analysis()
 
         # 3. Extract results to return
         xs_data = db.xsections[db.xsections['site_id'] == dam_id].to_dict('records')
