@@ -18,6 +18,8 @@ run_btn = None
 dam_dropdown = None
 display_btn = None
 calc_mode_var = None
+flowline_source_var = None
+streamflow_source_var = None
 
 # Checkbox Vars
 chk_xs = None
@@ -31,7 +33,7 @@ chk_bar = None
 def setup_analysis_tab(parent_tab):
     global db_entry, res_entry, run_btn, dam_dropdown, display_btn
     global chk_xs, chk_rc, chk_map, chk_wsp, chk_fdc, chk_bar
-    global calc_mode_var
+    global calc_mode_var, flowline_source_var, streamflow_source_var
 
     # --- Step 3 Frame ---
     path_frame = ttk.LabelFrame(parent_tab, text="Step 3: Analyze Results")
@@ -50,19 +52,29 @@ def setup_analysis_tab(parent_tab):
     res_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
     ttk.Button(path_frame, text="Select...", command=select_res).grid(row=1, column=2, padx=5, pady=5)
 
-    # Row 2: Calculation Mode
+    # Row 2: Flowline Source
+    flowline_source_var = tk.StringVar(value="NHDPlus")
+    ttk.Label(path_frame, text="Flowline Source:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+    ttk.Combobox(path_frame, textvariable=flowline_source_var, values=["NHDPlus", "TDX-Hydro"], state="readonly").grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
+
+    # Row 3: Streamflow Source
+    streamflow_source_var = tk.StringVar(value="National Water Model")
+    ttk.Label(path_frame, text="Streamflow Source:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
+    ttk.Combobox(path_frame, textvariable=streamflow_source_var, values=["National Water Model", "GEOGLOWS"], state="readonly").grid(row=3, column=1, padx=5, pady=5, sticky=tk.EW)
+
+    # Row 4: Calculation Mode
     calc_mode_var = tk.StringVar(value="Advanced")
-    ttk.Label(path_frame, text="Calculation Mode:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+    ttk.Label(path_frame, text="Calculation Mode:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
 
     mode_frame = ttk.Frame(path_frame)
-    mode_frame.grid(row=2, column=1, columnspan=2, sticky=tk.W)
+    mode_frame.grid(row=4, column=1, columnspan=2, sticky=tk.W)
 
     ttk.Radiobutton(mode_frame, text="Advanced", variable=calc_mode_var, value="Advanced").pack(side=tk.LEFT, padx=(0, 10))
     ttk.Radiobutton(mode_frame, text="Simplified", variable=calc_mode_var, value="Simplified").pack(side=tk.LEFT)
 
-    # Row 3: Run Button
+    # Row 5: Run Button
     run_btn = ttk.Button(path_frame, text="3. Analyze & Save All Dam Data", command=start_analysis)
-    run_btn.grid(row=3, column=0, columnspan=3, padx=5, pady=10, sticky=tk.EW)
+    run_btn.grid(row=5, column=0, columnspan=3, padx=5, pady=10, sticky=tk.EW)
 
     # --- Figure Frame ---
     fig_frame = ttk.LabelFrame(parent_tab, text="Select Figures to Display")
@@ -132,8 +144,17 @@ def update_dropdown():
 
         # 2. Find IDs that exist in either 'results' (Hydraulics) or 'xsections' (Geometry)
         # This fulfills the request to "look at rows that actually have results"
-        ids_res = set(db.results['site_id'].dropna().unique())
-        ids_xs = set(db.xsections['site_id'].dropna().unique())
+        
+        # NOTE: This logic might need to be updated if we want to check specific source sheets
+        # For now, we'll check ALL loaded sheets in the dictionary
+        
+        ids_res = set()
+        for df in db.results.values():
+            ids_res.update(df['site_id'].dropna().unique())
+            
+        ids_xs = set()
+        for df in db.xsections.values():
+            ids_xs.update(df['site_id'].dropna().unique())
 
         # Union them to be safe (in case a dam has geometry but no incident results yet)
         valid_ids_raw = ids_res.union(ids_xs)
@@ -165,11 +186,12 @@ def update_dropdown():
         utils.set_status(f"Error updating dropdown: {e}")
 
 
-def process_single_dam_analysis(dam_id, xlsx_path, res_dir, calc_mode):
+def process_single_dam_analysis(dam_id, xlsx_path, res_dir, calc_mode, flowline_source, streamflow_source):
     try:
         db = DatabaseManager(xlsx_path)
         # 1. Initialize (Loads geometry only - Fast)
-        dam = AnalysisDam(dam_id, db, base_results_dir=res_dir, calc_mode=calc_mode)
+        dam = AnalysisDam(dam_id, db, base_results_dir=res_dir, calc_mode=calc_mode,
+                          flowline_source=flowline_source, streamflow_source=streamflow_source)
 
         # 2. Run Analysis (Calculates P, H, Jumps - Expensive)
         xs_data, res_data = dam.run_analysis()
@@ -184,18 +206,52 @@ def generate_summary_charts(db_path, filter_id=None):
     figures_list = []
     try:
         db = DatabaseManager(db_path)
+        
+        # Determine which sheet to read based on current selection
+        # (Assuming user wants charts for the currently selected sources)
+        f_source = flowline_source_var.get()
+        s_source = streamflow_source_var.get()
+        
+        # Use the manager's helper (we can access it via a temporary instance or just replicate logic)
+        # Since we already have 'db' instance, let's use the public getter logic manually or add a helper
+        # But wait, generate_summary_charts is static-ish.
+        
+        # Let's use the public getter for a dummy ID to find the sheet name, or just iterate?
+        # Actually, the user might want to see charts for ALL sources? 
+        # For now, let's stick to the selected source to avoid clutter.
+        
+        # We need to access the specific dataframe from the dictionary
+        # The keys are like 'ResultsNHDNWM'
+        # Let's use the internal helper if possible, or just reconstruct the name
+        
+        abbr_map = {
+            'NHDPlus': 'NHD',
+            'TDX-Hydro': 'TDX',
+            'National Water Model': 'NWM',
+            'GEOGLOWS': 'GEO'
+        }
+        f_abbr = abbr_map.get(f_source, f_source)
+        s_abbr = abbr_map.get(s_source, s_source)
+        res_sheet = f"Results{f_abbr}{s_abbr}"
+        xs_sheet = f"CrossSections{f_abbr}{s_abbr}"
+        
+        if res_sheet not in db.results or xs_sheet not in db.xsections:
+            print(f"No data found for {f_source} / {s_source}")
+            return []
+
+        results_df = db.results[res_sheet]
+        xsections_df = db.xsections[xs_sheet]
 
         # Loop through cross-sections 1 to 4
         for i in range(1, 5):
             try:
                 # 1. Get Hydraulic Results for this XS index
-                # We filter the 'HydraulicResults' tab
-                res_df = db.results[db.results['xs_index'] == i].copy()
+                res_df = results_df[results_df['xs_index'] == i].copy()
                 if res_df.empty:
                     continue
 
                 # 2. Get Slopes from CrossSections tab to join
-                xs_df = db.xsections[db.xsections['xs_index'] == i][['site_id', 'slope']]
+                xs_df = xsections_df[xsections_df['xs_index'] == i][['site_id', 'slope']]
 
                 # 3. Merge results with slopes
                 # This gives us: site_id, date, y_t, y_2, y_flip, slope
@@ -259,7 +315,7 @@ def generate_summary_charts(db_path, filter_id=None):
                 # Label with slope
                 ax.set_xticklabels(plot_df['slope'].round(4).astype(str), rotation=90)
 
-                ax.set_title(f"Summary Results for Cross-Section {i}")
+                ax.set_title(f"Summary Results for Cross-Section {i} ({f_source}/{s_source})")
                 ax.set_ylabel("Depth (ft)")
                 ax.set_xlabel("Channel Slope")
 
@@ -280,6 +336,9 @@ def threaded_analysis(mode):
     try:
         xlsx_path = db_entry.get()
         res_dir = res_entry.get()
+        
+        f_source = flowline_source_var.get()
+        s_source = streamflow_source_var.get()
 
         db = DatabaseManager(xlsx_path)
         valid_ids = [site_id for site_id in db.sites['site_id']
@@ -297,7 +356,10 @@ def threaded_analysis(mode):
                 utils.set_status(f"Parallelizing analysis across {worker_count} workers...")
 
                 futures = client.map(process_single_dam_analysis, valid_ids,
-                                     xlsx_path=xlsx_path, res_dir=res_dir, calc_mode=mode)
+                                     xlsx_path=xlsx_path, res_dir=res_dir,
+                                     calc_mode=mode, 
+                                     flowline_source=f_source,
+                                     streamflow_source=s_source)
 
                 processed_count = 0
                 for future in as_completed(futures):
@@ -310,7 +372,8 @@ def threaded_analysis(mode):
                         db.update_site_data(dam_id, site_data)
 
                         # Use the existing manager method to merge the lists of dicts
-                        db.update_analysis_results(dam_id, xs_data, res_data)
+                        db.update_analysis_results(dam_id, xs_data, res_data,
+                                                   f_source, s_source)
 
                         utils.set_status(f"Analyzed Dam {dam_id} ({processed_count}/{total})")
                     else:
@@ -338,6 +401,9 @@ def threaded_display(mode):
         xlsx_path = db_entry.get()
         res_dir = res_entry.get()
         dam_sel = dam_dropdown.get()
+        
+        f_source = flowline_source_var.get()
+        s_source = streamflow_source_var.get()
 
         # 1. Determine which dams to process based on selection
         target_dams = []
@@ -349,8 +415,13 @@ def threaded_display(mode):
 
             # Find IDs that have results or cross-section data in the DB
             # We use a set union to catch dams that might have one but not the other
-            ids_res = set(db.results['site_id'].dropna().unique())
-            ids_xs = set(db.xsections['site_id'].dropna().unique())
+            ids_res = set()
+            for df in db.results.values():
+                ids_res.update(df['site_id'].dropna().unique())
+                
+            ids_xs = set()
+            for df in db.xsections.values():
+                ids_xs.update(df['site_id'].dropna().unique())
 
             valid_ids = sorted([int(x) for x in ids_res.union(ids_xs)])
             target_dams = valid_ids
@@ -387,7 +458,8 @@ def threaded_display(mode):
                         continue
 
                     # Initialize Dam Object
-                    dam = AnalysisDam(d_id, db, base_results_dir=res_dir, calc_mode=mode)
+                    dam = AnalysisDam(d_id, db, base_results_dir=res_dir, calc_mode=mode,
+                                      flowline_source=f_source, streamflow_source=s_source)
                     dam.load_results()
 
                     # Helper to add and save figures

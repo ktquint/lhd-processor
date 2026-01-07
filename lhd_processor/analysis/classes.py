@@ -74,16 +74,14 @@ class CrossSection:
         safe_idx = self.index if pd.notnull(self.index) else 0
         safe_L = self.L if pd.notnull(self.L) else 10.0
 
-        total_xs = len(self.parent_dam.dam_gdf)
-        max_idx = total_xs - 1
-
-        if safe_idx == max_idx:
+        # New Order: Index 0 is Upstream
+        if safe_idx == 0:
             self.location = 'Upstream'
             self.distance = int(safe_L)
             self.fatal_qs = None
         else:
             self.location = 'Downstream'
-            self.distance = int((max_idx - safe_idx) * safe_L)
+            self.distance = int(safe_idx * safe_L)
             self.fatal_qs = self.parent_dam.fatal_flows
 
     def _init_rating_curve(self, xs_row):
@@ -260,7 +258,8 @@ class CrossSection:
 
         if self.location == 'Downstream':
             try:
-                upstream_xs = self.parent_dam.cross_sections[-1]
+                # Upstream is now index 0
+                upstream_xs = self.parent_dam.cross_sections[0]
                 wse_upstream = upstream_xs.wse
 
                 us_x_left = []
@@ -478,11 +477,15 @@ class CrossSection:
 
 
 class Dam:
-    def __init__(self, lhd_id, db_manager, base_results_dir, calc_mode):
+    def __init__(self, lhd_id, db_manager, base_results_dir,
+                 calc_mode, flowline_source, streamflow_source):
+
         self.id = int(lhd_id)
         self.db = db_manager
         self.results_dir = os.path.normpath(base_results_dir)
         self.calc_mode = calc_mode
+        self.flowline_source = flowline_source
+        self.streamflow_source = streamflow_source
 
         self.site_data = self.db.get_site(self.id)
         self.incidents_df = self.db.get_site_incidents(self.id)
@@ -493,7 +496,7 @@ class Dam:
         self.latitude = self.site_data['latitude']
         self.longitude = self.site_data['longitude']
         self.weir_length = self.site_data['weir_length']
-        self.hydrology = self.site_data.get('streamflow_source', 'National Water Model')
+        self.hydrology = streamflow_source
         self.nwm_id = self.site_data['reach_id']
         self.geoglows_id = self.site_data['linkno']
 
@@ -534,6 +537,9 @@ class Dam:
         self.xs_gpkg = xs_gpkg
 
         self.dam_gdf = merge_arc_results(rc_gpkg, vdt_gpkg, xs_gpkg)
+        
+        # REVERSE ORDER: Upstream (0) -> Downstream (N)
+        self.dam_gdf = self.dam_gdf.iloc[::-1].reset_index(drop=True)
 
         # --- Initialize Flow Data ---
         self.flow_series = self.get_flow_data()
@@ -549,10 +555,9 @@ class Dam:
             self.cross_sections.append(CrossSection(row, self, index=index))
 
     def load_results(self):
-        if self.db.xsections.empty:
-            return
-
-        xs_data = self.db.xsections[self.db.xsections['site_id'] == self.id]
+        # Use the new getter with source parameters
+        xs_data = self.db.get_site_xsections(self.id, self.flowline_source, self.streamflow_source)
+        
         if xs_data.empty:
             return
         for xs in self.cross_sections:
@@ -574,19 +579,18 @@ class Dam:
         for i, xs in enumerate(self.cross_sections):
             xs_info = {
                 'site_id': self.id,
-                'dam_id': self.id,
                 'xs_index': i,
                 'Slope': xs.slope,
-                'slope': xs.slope,
                 'depth_a': xs.a,
                 'depth_b': xs.b,
                 'P_height': None
             }
-            if i < len(self.cross_sections) - 1:
+            if i > 0:
                 # the difference in water surface elevation
                 # going from the upstream cross-section to
                 # the current cross-section
-                delta_wse = self.cross_sections[-1].wse - xs.wse
+                # Upstream is now index 0
+                delta_wse = self.cross_sections[0].wse - xs.wse
                 y_i = xs.wse - xs.bed_elevation
                 try:
                     # calculate the dam height and weir head at baseflow conditions
@@ -710,6 +714,9 @@ class Dam:
         strm_gpkg = os.path.join(self.results_dir, str(self.id), "STRM", f"{self.id}_StrmShp.gpkg")
         strm_gdf = gpd.read_file(strm_gpkg).to_crs('EPSG:3857')
         xs_gdf = gpd.read_file(self.xs_gpkg).to_crs('EPSG:3857')
+        
+        # Reverse to match Dam order
+        xs_gdf = xs_gdf.iloc[::-1].reset_index(drop=True)
 
         buffer = 100
         minx, miny, maxx, maxy = xs_gdf.total_bounds
@@ -719,8 +726,8 @@ class Dam:
         ax.set_ylim(miny - buffer, maxy + buffer)
         ctx.add_basemap(ax, crs='EPSG:3857', source="Esri.WorldImagery", zorder=0)
 
-        gdf_upstream = xs_gdf.iloc[[-1]]
-        gdf_downstream = xs_gdf.iloc[:-1]
+        gdf_upstream = xs_gdf.iloc[[0]]
+        gdf_downstream = xs_gdf.iloc[1:]
         strm_gdf.plot(ax=ax, color='green', markersize=100, edgecolor='black', zorder=2, label="Flowline")
         gdf_upstream.plot(ax=ax, color='red', markersize=100, edgecolor='black', zorder=2, label="Upstream")
         gdf_downstream.plot(ax=ax, color='dodgerblue', markersize=100, edgecolor='black', zorder=2, label="Downstream")
@@ -759,16 +766,16 @@ class Dam:
         ax.plot(database_df.index, database_df['DEM_Elev'], color='dodgerblue', label='DEM Elevation')
         ax.plot(database_df.index, database_df['BaseElev'], color='black', label='Bed Elevation')
 
-        upstream_xs = self.dam_gdf.iloc[-1]
+        upstream_xs = self.dam_gdf.iloc[0]
         upstream_idx = \
             database_df[(database_df['Row'] == upstream_xs['Row']) & (database_df['Col'] == upstream_xs['Col'])].index[
                 0]
         ax.axvline(x=upstream_idx, color='red', linestyle='--', label=f'Upstream Cross-Section')
 
-        for i in range(len(self.dam_gdf) - 1):
+        for i in range(1, len(self.dam_gdf)):
             ds_xs = self.dam_gdf.iloc[i]
             ds_idx = database_df[(database_df["Row"] == ds_xs['Row']) & (database_df["Col"] == ds_xs['Col'])].index[0]
-            label = 'Downstream Cross-Sections' if i == 0 else ""
+            label = 'Downstream Cross-Sections' if i == 1 else ""
             ax.axvline(x=ds_idx, color='cyan', linestyle='--', label=label)
 
         ax.legend()
