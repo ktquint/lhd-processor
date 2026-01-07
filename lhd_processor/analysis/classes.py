@@ -3,10 +3,10 @@ import ast
 import pyproj
 import geoglows
 import numpy as np
+import xarray as xr
 import pandas as pd
 import geopandas as gpd
 import contextily as ctx
-import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
@@ -381,7 +381,24 @@ class CrossSection:
         for i, Q in enumerate(Qs):
             Y_Flip = compute_y_flip(Q, self.L, self.P)
             # Use shifted profiles
-            Y_Conj2 = solve_y2_adv(Q, self.L, self.H, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
+            # Recalculate H for this Q
+            # NOTE: This assumes H varies with Q, which it does (H = (Q/CL)^(2/3))
+            # The stored self.H is only for baseflow conditions!
+            # We need to calculate H for the current Q to get the correct sequent depth.
+            
+            # Using simplified weir equation to estimate H for a given Q
+            # Q = C * L * H^(3/2)  =>  H = (Q / (C * L))^(2/3)
+            # Assuming C ~ 1.8 (SI) or 3.3 (Imperial)? 
+            # The hydraulics module likely has a function for this.
+            # weir_H_simp(Q, L) is available.
+            
+            H_current = weir_H_simp(Q, self.L)
+            
+            if self.calc_mode == "Advanced":
+                Y_Conj2 = solve_y2_adv(Q, self.L, H_current, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
+            else:
+                Y_Conj2 = calc_y2_simp(H_current, self.P)
+
             Y_Flips.append(Y_Flip)
             Y_Conjugates.append(Y_Conj2)
 
@@ -569,6 +586,42 @@ class Dam:
                     if pd.notnull(p_val):
                         P = float(p_val)
                         xs.set_dam_height(P)
+                        
+                    # Also load H (head) if available, or re-calculate?
+                    # The error "unsupported operand type(s) for *: 'float' and 'NoneType'"
+                    # suggests that H is None when solve_y2_adv is called in plot_flip_sequent.
+                    # We need to ensure H is set.
+                    
+                    # If H is not in the DB, we might need to re-calculate it from P and baseflow
+                    # But wait, H depends on baseflow condition.
+                    # Let's recalculate H and P from geometry if possible, OR just H from P?
+                    # Actually, H is derived from P and Q_baseflow in run_analysis.
+                    # If we are just loading results, we might not have H stored.
+                    
+                    # Let's re-calculate H based on P and baseflow
+                    if xs.P is not None:
+                        # We need delta_wse to calculate H properly using solve_weir_geom
+                        # But we don't have delta_wse easily here without looking at upstream XS
+                        
+                        # Alternative: If we have P, we can estimate H?
+                        # No, H + P = delta_wse + y_t (roughly)
+                        
+                        # Let's look at how run_analysis does it:
+                        # H_i, P_i = solve_weir_geom(self.baseflow, self.weir_length, y_i, delta_wse)
+                        
+                        # If we are in "display mode", we might not want to re-run the full solver.
+                        # However, to get H, we need to know the hydraulic state.
+                        
+                        # Let's try to re-run the basic geometry solve for this XS
+                        if xs.index > 0:
+                            upstream_xs = self.cross_sections[0]
+                            delta_wse = upstream_xs.wse - xs.wse
+                            y_i = xs.wse - xs.bed_elevation
+                            
+                            H_i, P_i = solve_weir_geom(self.baseflow, self.weir_length, y_i, delta_wse)
+                            xs.set_weir_head(H_i)
+                            # We can also update P just in case
+                            # xs.set_dam_height(P_i)
 
                 except Exception as e:
                     print(f"Error loading parameters for XS {xs.index}: {e}")

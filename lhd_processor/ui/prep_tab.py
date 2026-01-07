@@ -92,7 +92,7 @@ def setup_prep_tab(parent_tab):
     prep_run_button.pack(pady=10, padx=10, fill="x")
 
     # --- Step 2 Frame: Run RathCelon ---
-    rath_frame = ttk.LabelFrame(parent_tab, text="Step 2: Run RathCelon")
+    rath_frame = ttk.LabelFrame(parent_tab, text="Step 2: Automated Rating Curves")
     rath_frame.pack(pady=10, padx=10, fill="x")
     rath_frame.columnconfigure(1, weight=1)
 
@@ -107,7 +107,7 @@ def setup_prep_tab(parent_tab):
     btn_frame.columnconfigure(0, weight=1)
     btn_frame.columnconfigure(1, weight=1)
 
-    rath_run_button = ttk.Button(btn_frame, text="2. Run RathCelon", command=start_rath_thread)
+    rath_run_button = ttk.Button(btn_frame, text="2. Run ARC", command=start_rath_thread)
     rath_run_button.grid(row=0, column=0, padx=5, sticky=tk.EW)
 
     rath_stop_button = ttk.Button(btn_frame, text="STOP Processing", command=stop_rath_thread, state=tk.DISABLED)

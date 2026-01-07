@@ -77,7 +77,7 @@ def plot_downstream(cf_local, vdt_database, xs_database, id):
 
 def run_successful(run_results_dir):
     lhd_id = os.path.basename(run_results_dir)
-    xs_gpkg = os.path.join(run_results_dir, "XS", f"{lhd_id}_Local_XS_Lines.gpkg")
+    xs_gpkg = os.path.join(run_results_dir, "XS", f"{lhd_id}_Local_XS.gpkg")
 
     if not os.path.exists(xs_gpkg):
         return False  # or raise an error if preferred
@@ -179,12 +179,12 @@ def compare_1m_to_10m(one_meter_results, ten_meter_results):
         if run_successful(one_meter_dir) and run_successful(ten_meter_dir):
 
             vdt_1m = os.path.join(one_meter_results, lhd_id, 'VDT', f'{lhd_id}_Local_VDT_Database.gpkg')
-            cf_1m = os.path.join(one_meter_results, lhd_id, 'VDT', f'{lhd_id}_Local_CurveFile.gpkg')
-            xs_1m = os.path.join(one_meter_results, lhd_id, 'XS', f'{lhd_id}_Local_XS_Lines.gpkg')
+            cf_1m = os.path.join(one_meter_results, lhd_id, 'VDT', f'{lhd_id}_Local_Curve.gpkg')
+            xs_1m = os.path.join(one_meter_results, lhd_id, 'XS', f'{lhd_id}_Local_XS.gpkg')
 
             vdt_10m = os.path.join(ten_meter_results, lhd_id, 'VDT', f'{lhd_id}_Local_VDT_Database.gpkg')
-            cf_10m = os.path.join(ten_meter_results, lhd_id, 'VDT', f'{lhd_id}_Local_CurveFile.gpkg')
-            xs_10m = os.path.join(ten_meter_results, lhd_id, 'XS', f'{lhd_id}_Local_XS_Lines.gpkg')
+            cf_10m = os.path.join(ten_meter_results, lhd_id, 'VDT', f'{lhd_id}_Local_Curve.gpkg')
+            xs_10m = os.path.join(ten_meter_results, lhd_id, 'XS', f'{lhd_id}_Local_XS.gpkg')
 
             print(f"Working on {lhd_id}")
             gdf_1m = merge_arc_results(cf_1m, vdt_1m, xs_1m)

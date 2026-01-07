@@ -14,6 +14,7 @@ from ..analysis.classes import Dam as AnalysisDam
 # Module-level widgets
 db_entry = None
 res_entry = None
+res_entry_display = None
 run_btn = None
 dam_dropdown = None
 display_btn = None
@@ -31,7 +32,7 @@ chk_bar = None
 
 
 def setup_analysis_tab(parent_tab):
-    global db_entry, res_entry, run_btn, dam_dropdown, display_btn
+    global db_entry, res_entry, res_entry_display, run_btn, dam_dropdown, display_btn
     global chk_xs, chk_rc, chk_map, chk_wsp, chk_fdc, chk_bar
     global calc_mode_var, flowline_source_var, streamflow_source_var
 
@@ -46,31 +47,36 @@ def setup_analysis_tab(parent_tab):
     db_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
     ttk.Button(path_frame, text="Select...", command=select_db).grid(row=0, column=2, padx=5, pady=5)
 
-    # Row 1: Results Folder
-    ttk.Label(path_frame, text="Results Folder:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
-    res_entry = ttk.Entry(path_frame)
-    res_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
-    ttk.Button(path_frame, text="Select...", command=select_res).grid(row=1, column=2, padx=5, pady=5)
-
-    # Row 2: Flowline Source
+    # Row 1: Flowline Source
     flowline_source_var = tk.StringVar(value="NHDPlus")
-    ttk.Label(path_frame, text="Flowline Source:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
-    ttk.Combobox(path_frame, textvariable=flowline_source_var, values=["NHDPlus", "TDX-Hydro"], state="readonly").grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
+    ttk.Label(path_frame, text="Flowline Source:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+    ttk.Combobox(path_frame, textvariable=flowline_source_var, values=["NHDPlus", "TDX-Hydro"],
+                 state="readonly").grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
 
-    # Row 3: Streamflow Source
+    # Row 2: Streamflow Source
     streamflow_source_var = tk.StringVar(value="National Water Model")
-    ttk.Label(path_frame, text="Streamflow Source:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
-    ttk.Combobox(path_frame, textvariable=streamflow_source_var, values=["National Water Model", "GEOGLOWS"], state="readonly").grid(row=3, column=1, padx=5, pady=5, sticky=tk.EW)
+    ttk.Label(path_frame, text="Streamflow Source:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+    ttk.Combobox(path_frame, textvariable=streamflow_source_var,
+                 values=["National Water Model", "GEOGLOWS"],
+                 state="readonly").grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
 
-    # Row 4: Calculation Mode
+    # Row 3: Calculation Mode
     calc_mode_var = tk.StringVar(value="Advanced")
-    ttk.Label(path_frame, text="Calculation Mode:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+    ttk.Label(path_frame, text="Calculation Mode:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
 
     mode_frame = ttk.Frame(path_frame)
-    mode_frame.grid(row=4, column=1, columnspan=2, sticky=tk.W)
+    mode_frame.grid(row=3, column=1, columnspan=2, sticky=tk.W)
 
-    ttk.Radiobutton(mode_frame, text="Advanced", variable=calc_mode_var, value="Advanced").pack(side=tk.LEFT, padx=(0, 10))
-    ttk.Radiobutton(mode_frame, text="Simplified", variable=calc_mode_var, value="Simplified").pack(side=tk.LEFT)
+    ttk.Radiobutton(mode_frame, text="Advanced",
+                    variable=calc_mode_var, value="Advanced").pack(side="left", padx=(0, 10))
+    ttk.Radiobutton(mode_frame, text="Simplified",
+                    variable=calc_mode_var, value="Simplified").pack(side="left")
+
+    # Row 4: Results Folder
+    ttk.Label(path_frame, text="Results Folder:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+    res_entry = ttk.Entry(path_frame)
+    res_entry.grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
+    ttk.Button(path_frame, text="Select...", command=select_res).grid(row=4, column=2, padx=5, pady=5)
 
     # Row 5: Run Button
     run_btn = ttk.Button(path_frame, text="3. Analyze & Save All Dam Data", command=start_analysis)
@@ -81,28 +87,37 @@ def setup_analysis_tab(parent_tab):
     fig_frame.pack(pady=10, padx=10, fill="x")
     fig_frame.columnconfigure(1, weight=1)
 
-    # Row 0: Dropdown + Refresh Button
-    ttk.Label(fig_frame, text="Dam to Display:").grid(row=0, column=0, padx=5, pady=5)
+    # Row 0: Results Folder (Display)
+    ttk.Label(fig_frame, text="Results Folder:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+    res_entry_display = ttk.Entry(fig_frame)
+    res_entry_display.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+    ttk.Button(fig_frame, text="Select...", command=select_res_display).grid(row=0, column=2, padx=5, pady=5)
+
+    # Row 1: Dropdown + Refresh Button
+    ttk.Label(fig_frame, text="Dam to Display:").grid(row=1, column=0, padx=5, pady=5)
 
     dam_dropdown = ttk.Combobox(fig_frame, state="readonly")
-    dam_dropdown.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+    dam_dropdown.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
 
     # Refresh Button
-    ttk.Button(fig_frame, text="↻", command=update_dropdown).grid(row=0, column=2, padx=5, pady=5)
+    ttk.Button(fig_frame, text="↻", command=update_dropdown).grid(row=1, column=2, padx=5, pady=5)
 
     # Checkboxes
     chk_xs = tk.BooleanVar(value=False)
-    ttk.Checkbutton(fig_frame, text="Cross-Sections", variable=chk_xs).grid(row=1, column=0, sticky=tk.W)
+    ttk.Checkbutton(fig_frame, text="Cross-Sections", variable=chk_xs).grid(row=2, column=0, sticky=tk.W)
     chk_rc = tk.BooleanVar(value=False)
-    ttk.Checkbutton(fig_frame, text="Rating Curves", variable=chk_rc).grid(row=2, column=0, sticky=tk.W)
+    ttk.Checkbutton(fig_frame, text="Rating Curves", variable=chk_rc).grid(row=3, column=0, sticky=tk.W)
     chk_map = tk.BooleanVar(value=False)
-    ttk.Checkbutton(fig_frame, text="Location Map", variable=chk_map).grid(row=3, column=0, sticky=tk.W)
+    ttk.Checkbutton(fig_frame, text="Location Map", variable=chk_map).grid(row=4, column=0, sticky=tk.W)
     chk_wsp = tk.BooleanVar(value=False)
-    ttk.Checkbutton(fig_frame, text="Water Surface Profile", variable=chk_wsp).grid(row=1, column=1, sticky=tk.W)
+    ttk.Checkbutton(fig_frame, text="Water Surface Profile",
+                    variable=chk_wsp).grid(row=2, column=1, sticky=tk.W)
     chk_fdc = tk.BooleanVar(value=False)
-    ttk.Checkbutton(fig_frame, text="Flow Duration Curve", variable=chk_fdc).grid(row=2, column=1, sticky=tk.W)
+    ttk.Checkbutton(fig_frame, text="Flow Duration Curve",
+                    variable=chk_fdc).grid(row=3, column=1, sticky=tk.W)
     chk_bar = tk.BooleanVar(value=False)
-    ttk.Checkbutton(fig_frame, text="Generate Bar Chart (All)", variable=chk_bar).grid(row=3, column=1, sticky=tk.W)
+    ttk.Checkbutton(fig_frame, text="Generate Bar Chart (All)",
+                    variable=chk_bar).grid(row=4, column=1, sticky=tk.W)
 
     display_btn = ttk.Button(parent_tab, text="4. Generate & Display Figures", command=start_display)
     display_btn.pack(fill="x", padx=10, pady=10)
@@ -128,47 +143,47 @@ def select_res():
         res_entry.insert(0, d)
 
 
+def select_res_display():
+    d = filedialog.askdirectory()
+    if d:
+        res_entry_display.delete(0, tk.END)
+        res_entry_display.insert(0, d)
+        update_dropdown()
+
+
 def update_dropdown():
     """
-    Refreshes the 'Dam to Display' list by querying the database for
-    sites that have actual Hydraulic Results or Cross-Section data.
+    Refreshes the 'Dam to Display' list by scanning the Results Folder (Display)
+    for valid site directories containing required GPKG files.
     """
-    db_path = db_entry.get()
+    res_dir = res_entry_display.get()
 
-    if not os.path.isfile(db_path):
+    if not res_dir or not os.path.isdir(res_dir):
         return
 
     try:
-        # 1. Load the Database (Force reload from disk)
-        db = DatabaseManager(db_path)
-
-        # 2. Find IDs that exist in either 'results' (Hydraulics) or 'xsections' (Geometry)
-        # This fulfills the request to "look at rows that actually have results"
-        
-        # NOTE: This logic might need to be updated if we want to check specific source sheets
-        # For now, we'll check ALL loaded sheets in the dictionary
-        
-        ids_res = set()
-        for df in db.results.values():
-            ids_res.update(df['site_id'].dropna().unique())
-            
-        ids_xs = set()
-        for df in db.xsections.values():
-            ids_xs.update(df['site_id'].dropna().unique())
-
-        # Union them to be safe (in case a dam has geometry but no incident results yet)
-        valid_ids_raw = ids_res.union(ids_xs)
-
-        # Clean and Sort
         valid_ids = []
-        for x in valid_ids_raw:
-            try:
-                valid_ids.append(int(x))
-            except:
-                pass
+        
+        # Iterate over items in the results directory
+        for item in os.listdir(res_dir):
+            site_path = os.path.join(res_dir, item)
+            
+            # Check if it's a directory and the name is an integer (site_id)
+            if os.path.isdir(site_path) and item.isdigit():
+                site_id = item
+                
+                # Define required file paths
+                vdt_db = os.path.join(site_path, "VDT", f"{site_id}_Local_VDT_Database.gpkg")
+                curve_db = os.path.join(site_path, "VDT", f"{site_id}_Local_Curve.gpkg")
+                xs_db = os.path.join(site_path, "XS", f"{site_id}_Local_XS.gpkg")
+                
+                # Check if all exist
+                if os.path.exists(vdt_db) and os.path.exists(curve_db) and os.path.exists(xs_db):
+                    valid_ids.append(int(site_id))
+        
         valid_ids.sort()
 
-        # 3. Update Dropdown
+        # Update Dropdown
         dams = ["All Dams"] + [str(d) for d in valid_ids]
         # noinspection PyTypeHints
         dam_dropdown["values"] = dams
@@ -180,7 +195,7 @@ def update_dropdown():
         elif dams:
             dam_dropdown.set(dams[0])
 
-        utils.set_status(f"Refreshed list: Found {len(valid_ids)} dams with analysis data.")
+        utils.set_status(f"Refreshed list: Found {len(valid_ids)} dams with valid data.")
 
     except Exception as e:
         utils.set_status(f"Error updating dropdown: {e}")
@@ -399,7 +414,7 @@ def threaded_display(mode):
     figs = []
     try:
         xlsx_path = db_entry.get()
-        res_dir = res_entry.get()
+        res_dir = res_entry_display.get()
         dam_sel = dam_dropdown.get()
         
         f_source = flowline_source_var.get()
@@ -410,21 +425,11 @@ def threaded_display(mode):
         filter_id = None  # Default to None (implies "All" for summary charts)
 
         if dam_sel == "All Dams":
-            # Fetch all valid IDs from the database (USING THE NEW LOGIC)
-            db = DatabaseManager(xlsx_path)
-
-            # Find IDs that have results or cross-section data in the DB
-            # We use a set union to catch dams that might have one but not the other
-            ids_res = set()
-            for df in db.results.values():
-                ids_res.update(df['site_id'].dropna().unique())
-                
-            ids_xs = set()
-            for df in db.xsections.values():
-                ids_xs.update(df['site_id'].dropna().unique())
-
-            valid_ids = sorted([int(x) for x in ids_res.union(ids_xs)])
-            target_dams = valid_ids
+            all_values = dam_dropdown["values"]
+            if len(all_values) > 1:
+                target_dams = [int(x) for x in all_values[1:]]
+            else:
+                target_dams = []
 
         elif dam_sel:
             # Single dam selection
