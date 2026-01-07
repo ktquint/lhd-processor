@@ -1,6 +1,7 @@
 # build-in imports
 import ast
 import os
+import gc
 from pathlib import Path
 
 # third-party imports
@@ -76,6 +77,11 @@ def clean_strm_raster(strm_tif: str, clean_strm_tif: str) -> None:
     (SN, ncols, nrows, cellsize, yll, yur, xll, xur, lat, gt, proj) = read_raster_w_gdal(strm_tif)
     B = np.zeros((nrows + 2, ncols + 2))
     B[1:nrows + 1, 1:ncols + 1] = np.where(SN > 0, SN, 0)
+    
+    # Free memory of original raster array
+    del SN
+    gc.collect()
+    
     (RR, CC) = np.where(B > 0)
     num_nonzero = len(RR)
 
@@ -303,6 +309,10 @@ class RathCelonDam:
         target_points = [merged_geom.interpolate(min(start_dist + i * self.weir_length, merged_geom.length)) for i in range(1, 5)]
         target_points.append(merged_geom.interpolate(max(start_dist - self.weir_length, 0)))
 
+        # Define labels
+        point_labels = [f"Downstream{i}" for i in range(1, 5)]
+        point_labels.append("Upstream")
+
         # Transform target points to DEM
         with rasterio.open(self.dem_tif) as ds:
             geoTransform = ds.transform
@@ -318,6 +328,7 @@ class RathCelonDam:
 
         # Calculate Row/Col for target points
         tp_gdf = gpd.GeoDataFrame(geometry=target_points, crs=projected_crs)
+        tp_gdf['Relative_Loc'] = point_labels
         rc_values = [pt_to_rc(pt) for pt in target_points_dem]
         tp_gdf['Row'] = [x[0] for x in rc_values]
         tp_gdf['Col'] = [x[1] for x in rc_values]
@@ -332,6 +343,11 @@ class RathCelonDam:
             final_indices.append(best_idx)
 
         extracted_curve = curve_df.loc[final_indices].copy()
+        extracted_curve['Relative_Loc'] = tp_gdf['Relative_Loc'].values
+        
+        # Free memory of full curve_df
+        del curve_df
+        gc.collect()
         
         # Determine ID field (COMID or XS_ID)
         id_col = 'COMID' if 'COMID' in extracted_curve.columns else 'XS_ID'
@@ -339,6 +355,11 @@ class RathCelonDam:
         # Filter VDT
         target_ids = extracted_curve[id_col].unique()
         self.vdt_gdf = vdt_df[vdt_df[id_col].isin(target_ids)].copy()
+        self.vdt_gdf = self.vdt_gdf.merge(extracted_curve[[id_col, 'Relative_Loc']].drop_duplicates(), on=id_col, how='left')
+        
+        # Free memory of full vdt_df
+        del vdt_df
+        gc.collect()
         
         # Create Curve GeoDataFrame
         x_base = float(minx) + 0.5 * dx
@@ -367,10 +388,14 @@ class RathCelonDam:
                 xs_id_col = 'COMID' if 'COMID' in xs_df.columns else 'XS_ID'
                 
                 # Merge XS with extracted_curve on ID, Row, Col
-                merged_xs = xs_df.merge(extracted_curve[[id_col, 'Row', 'Col']], 
+                merged_xs = xs_df.merge(extracted_curve[[id_col, 'Row', 'Col', 'Relative_Loc']], 
                                         left_on=[xs_id_col, 'Row', 'Col'], 
                                         right_on=[id_col, 'Row', 'Col'], 
                                         how='inner')
+                
+                # Free memory of full xs_df
+                del xs_df
+                gc.collect()
 
                 transformer_ll = Transformer.from_crs(projected_crs, "EPSG:4326", always_xy=True)
 
@@ -407,6 +432,7 @@ class RathCelonDam:
 
                         xs_lines.append({
                             'COMID': comid,
+                            'Relative_Loc': row['Relative_Loc'],
                             'Row': int(row['Row']),
                             'Col': int(row['Col']),
                             'geometry': line_geom,
@@ -433,6 +459,12 @@ class RathCelonDam:
         else:
             print("    ⚠️ No XS lines extracted.")
             self.xs_gdf = gpd.GeoDataFrame(columns=['geometry', 'COMID'], crs="EPSG:4326")
+        
+        # Final cleanup for this dam
+        if self.vdt_gdf is not None: del self.vdt_gdf
+        if self.curve_data_gdf is not None: del self.curve_data_gdf
+        if self.xs_gdf is not None: del self.xs_gdf
+        gc.collect()
 
     def process_dam(self):
         """Execution loop for processing a single dam."""
@@ -471,6 +503,10 @@ class RathCelonDam:
                 except AttributeError:
                     pass
                 arc_runner.run()
+                
+                # Explicitly clean up ARC runner if possible
+                del arc_runner
+                gc.collect()
 
             print("    Extracting hydraulic cross-sections...")
             self._find_strm_up_downstream()

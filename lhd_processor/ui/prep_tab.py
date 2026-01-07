@@ -34,6 +34,9 @@ prep_run_button = None
 rath_xlsx_entry = None
 rath_run_button = None
 rath_stop_button = None
+rath_results_entry = None
+rath_flowline_var = None
+rath_streamflow_var = None
 
 # Global Threading Event for Stopping
 stop_event = threading.Event()
@@ -44,49 +47,56 @@ def setup_prep_tab(parent_tab):
     global project_entry, database_entry, dem_entry, strm_entry, land_use_entry, results_entry
     global flowline_var, dd_var, streamflow_var, baseflow_var
     global prep_run_button, rath_xlsx_entry, rath_run_button, rath_stop_button
+    global rath_results_entry, rath_flowline_var, rath_streamflow_var
 
     # --- Step 1 Frame: Prepare Data ---
     prep_frame = ttk.LabelFrame(parent_tab, text="Step 1: Prepare Data")
     prep_frame.pack(pady=10, padx=10, fill="x")
 
-    paths_frame = ttk.Frame(prep_frame)
-    paths_frame.pack(pady=5, padx=10, fill="x")
-    paths_frame.columnconfigure(1, weight=1)
+    # Unified frame for interleaved inputs
+    input_frame = ttk.Frame(prep_frame)
+    input_frame.pack(pady=5, padx=10, fill="x")
+    input_frame.columnconfigure(1, weight=1)
 
     def add_path_row(row, label_text, cmd, is_file=False, must_exist=True):
-        ttk.Label(paths_frame, text=label_text).grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
-        entry = ttk.Entry(paths_frame)
+        ttk.Label(input_frame, text=label_text).grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
+        entry = ttk.Entry(input_frame)
         entry.grid(row=row, column=1, padx=5, pady=5, sticky=tk.EW)
         utils.bind_path_validation(entry, is_file=is_file, must_exist=must_exist)
-        ttk.Button(paths_frame, text="Select...", command=cmd).grid(row=row, column=2, padx=5, pady=5)
+        ttk.Button(input_frame, text="Select...", command=cmd).grid(row=row, column=2, padx=5, pady=5)
         return entry
 
-    # Inputs and Outputs for Step 1
-    project_entry = add_path_row(0, "Project Folder:", select_project_dir, is_file=False, must_exist=True)
-    database_entry = add_path_row(1, "Database (.xlsx):", select_database, is_file=True, must_exist=True)
-    dem_entry = add_path_row(2, "DEM Folder:", select_dem_dir, is_file=False, must_exist=False)
-    strm_entry = add_path_row(3, "Hydrography Folder:", select_strm_dir, is_file=False, must_exist=False)
-    land_use_entry = add_path_row(4, "Land Use Folder:", select_land_use_dir, is_file=False, must_exist=False)
-    results_entry = add_path_row(5, "Results Folder:", select_results_dir, is_file=False, must_exist=False)
-
-    # Settings Dropdowns
-    hydro_frame = ttk.Frame(prep_frame)
-    hydro_frame.pack(pady=5, padx=10, fill="x")
-    hydro_frame.columnconfigure(1, weight=1)
-
     def add_combo(row, label, values, default):
-        ttk.Label(hydro_frame, text=label).grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(input_frame, text=label).grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
         var = tk.StringVar(value=default)
-        cb = ttk.Combobox(hydro_frame, textvariable=var, state="readonly", values=values)
+        cb = ttk.Combobox(input_frame, textvariable=var, state="readonly", values=values)
         cb.grid(row=row, column=1, padx=5, pady=5, sticky=tk.EW)
         return var
 
-    dd_var = add_combo(0, "DEM Resolution (m):", ("1", "10"), "1")
-    flowline_var = add_combo(1, "Flowline Source:", ("NHDPlus", "TDX-Hydro"), "NHDPlus")
-    streamflow_var = add_combo(2, "Streamflow Source:", ("National Water Model", "GEOGLOWS"), "National Water Model")
-    baseflow_var = add_combo(3, "Baseflow Estimation:",
+    # Row counter
+    r = 0
+
+    # Project & Database
+    project_entry = add_path_row(r, "Project Folder:", select_project_dir, is_file=False, must_exist=True); r+=1
+    database_entry = add_path_row(r, "Database (.xlsx):", select_database, is_file=True, must_exist=True); r+=1
+
+    # DEM
+    dem_entry = add_path_row(r, "DEM Folder:", select_dem_dir, is_file=False, must_exist=False); r+=1
+    dd_var = add_combo(r, "   ↳ DEM Resolution (m):", ("1", "10"), "1"); r+=1
+
+    # Hydrography
+    strm_entry = add_path_row(r, "Hydrography Folder:", select_strm_dir, is_file=False, must_exist=False); r+=1
+    flowline_var = add_combo(r, "   ↳ Flowline Source:", ("NHDPlus", "TDX-Hydro"), "NHDPlus"); r+=1
+    streamflow_var = add_combo(r, "   ↳ Streamflow Source:", ("National Water Model", "GEOGLOWS"), "National Water Model"); r+=1
+
+    # Land Use
+    land_use_entry = add_path_row(r, "Land Use Folder:", select_land_use_dir, is_file=False, must_exist=False); r+=1
+
+    # Results & Baseflow
+    results_entry = add_path_row(r, "Results Folder:", select_results_dir, is_file=False, must_exist=False); r+=1
+    baseflow_var = add_combo(r, "   ↳ Baseflow Estimation:",
                              ("WSE and LiDAR Date", "WSE and Median Daily Flow", "2-yr Flow and Bank Estimation"),
-                             "WSE and LiDAR Date")
+                             "WSE and LiDAR Date"); r+=1
 
     prep_run_button = ttk.Button(prep_frame, text="1. Prepare Data & Update Database", command=start_prep_thread)
     prep_run_button.pack(pady=10, padx=10, fill="x")
@@ -96,14 +106,37 @@ def setup_prep_tab(parent_tab):
     rath_frame.pack(pady=10, padx=10, fill="x")
     rath_frame.columnconfigure(1, weight=1)
 
+    # Row 0: Excel Database
     ttk.Label(rath_frame, text="Excel Database:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
     rath_xlsx_entry = ttk.Entry(rath_frame)
     rath_xlsx_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
     utils.bind_path_validation(rath_xlsx_entry, is_file=True, must_exist=True)
     ttk.Button(rath_frame, text="Select...", command=select_rath_xlsx).grid(row=0, column=2, padx=5, pady=5)
 
+    # Row 1: Results Folder (Moved here)
+    ttk.Label(rath_frame, text="Results Folder:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+    rath_results_entry = ttk.Entry(rath_frame)
+    rath_results_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
+    utils.bind_path_validation(rath_results_entry, is_file=False, must_exist=False)
+    ttk.Button(rath_frame, text="Select...", command=select_rath_results_dir).grid(row=1, column=2, padx=5, pady=5)
+
+    # Row 2: Flowline Source & Streamflow Source
+    opts_frame = ttk.Frame(rath_frame)
+    opts_frame.grid(row=2, column=0, columnspan=3, sticky=tk.EW, pady=5)
+    opts_frame.columnconfigure(1, weight=1)
+    opts_frame.columnconfigure(3, weight=1)
+
+    ttk.Label(opts_frame, text="Flowline Source:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+    rath_flowline_var = tk.StringVar(value="NHDPlus")
+    ttk.Combobox(opts_frame, textvariable=rath_flowline_var, state="readonly", values=("NHDPlus", "TDX-Hydro")).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+
+    ttk.Label(opts_frame, text="Streamflow Source:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+    rath_streamflow_var = tk.StringVar(value="National Water Model")
+    ttk.Combobox(opts_frame, textvariable=rath_streamflow_var, state="readonly", values=("National Water Model", "GEOGLOWS")).grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
+
+    # Row 3: Buttons
     btn_frame = ttk.Frame(rath_frame)
-    btn_frame.grid(row=1, column=0, columnspan=3, sticky=tk.EW, pady=10)
+    btn_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=10)
     btn_frame.columnconfigure(0, weight=1)
     btn_frame.columnconfigure(1, weight=1)
 
@@ -136,6 +169,11 @@ def select_project_dir():
                               (results_entry, "Results")]:
             entry.delete(0, tk.END)
             entry.insert(0, os.path.join(path, folder))
+        
+        # Also fill rath results
+        rath_results_entry.delete(0, tk.END)
+        rath_results_entry.insert(0, os.path.join(path, "Results"))
+
         utils.set_status("Project paths loaded.")
     except Exception as e:
         messagebox.showerror("Error", f"Failed to load paths: {e}")
@@ -173,9 +211,17 @@ def select_land_use_dir():
 
 def select_results_dir():
     d = filedialog.askdirectory()
-    if d: results_entry.delete(0, tk.END)
-    results_entry.insert(0, d)
+    if d: 
+        results_entry.delete(0, tk.END)
+        results_entry.insert(0, d)
+        rath_results_entry.delete(0, tk.END)
+        rath_results_entry.insert(0, d)
 
+def select_rath_results_dir():
+    d = filedialog.askdirectory()
+    if d:
+        rath_results_entry.delete(0, tk.END)
+        rath_results_entry.insert(0, d)
 
 def select_rath_xlsx():
     f = filedialog.askopenfilename(filetypes=[("Excel Database", "*.xlsx")])
@@ -271,6 +317,14 @@ def threaded_prepare_data():
         db.save()
         rath_xlsx_entry.delete(0, tk.END)
         rath_xlsx_entry.insert(0, xlsx_path)
+        
+        # Also update results folder in Step 2
+        rath_results_entry.delete(0, tk.END)
+        rath_results_entry.insert(0, results_folder)
+        
+        # Update dropdowns in Step 2
+        rath_flowline_var.set(flowline_source)
+        rath_streamflow_var.set(streamflow_source)
 
         utils.set_status("Prep complete. Ready for Step 2.")
         messagebox.showinfo("Success", "Excel database updated and set as input for RathCelon.")
@@ -289,25 +343,46 @@ def threaded_run_rathcelon():
         rath_stop_button.config(state=tk.NORMAL)
 
         excel_loc = rath_xlsx_entry.get()
+        results_loc = rath_results_entry.get()
+        
         if not os.path.exists(excel_loc):
             messagebox.showerror("Error", "Excel database not found.")
             return
 
         # Read Excel and run through Dask
         df = pd.read_excel(excel_loc)
+        
+        # Override output_dir in the dataframe if specified in UI
+        if results_loc:
+            df['output_dir'] = results_loc
+            
+        # Override sources if needed (though they should be in the excel from step 1)
+        # But user might change them in Step 2 UI
+        fl_source = rath_flowline_var.get()
+        sf_source = rath_streamflow_var.get()
+        
+        if fl_source:
+            df['flowline_source'] = fl_source
+        if sf_source:
+            df['streamflow_source'] = sf_source
+
         dams = df.to_dict(orient='records')
-        count_to_run = len(dams)
+        
+        # We process all dams, relying on RathCelonDam.process_dam to skip heavy ARC simulation
+        # if Bathy.tif exists, but ALWAYS re-extract XS lines as requested.
+        dams_to_process = dams
+        count_to_run = len(dams_to_process)
 
         total_cores = os.cpu_count() or 1
         # worker_count = max(1, int(total_cores / 3))
-        worker_count = 1
+        worker_count = 3
 
         utils.set_status(f"Initializing Dask Workers ({worker_count}) for {count_to_run} dams...")
 
         with LocalCluster(processes=True, threads_per_worker=1, n_workers=worker_count) as cluster:
             with Client(cluster) as client:
                 utils.set_status(f"Processing... (Dashboard: {client.dashboard_link})")
-                futures = client.map(process_single_dam_rathcelon, dams)
+                futures = client.map(process_single_dam_rathcelon, dams_to_process)
 
                 processed_so_far = 0
                 for future in as_completed(dask_as_completed(futures)):
@@ -315,9 +390,17 @@ def threaded_run_rathcelon():
                         client.cancel(futures)
                         break
 
-                    success, name, err = future.result()
-                    processed_so_far += 1
-                    utils.set_status(f"Finished {name} ({processed_so_far}/{count_to_run})")
+                    try:
+                        success, name, err = future.result()
+                        processed_so_far += 1
+                        if success:
+                            utils.set_status(f"Finished {name} ({processed_so_far}/{count_to_run})")
+                        else:
+                            utils.set_status(f"Failed {name} ({processed_so_far}/{count_to_run}): {err}")
+                    except Exception as e:
+                        # Handle worker crashes (e.g. KilledWorker) gracefully
+                        processed_so_far += 1
+                        utils.set_status(f"Worker crashed on a task ({processed_so_far}/{count_to_run}): {e}")
 
         if stop_event.is_set():
             messagebox.showwarning("Stopped", "Processing stopped by user.")

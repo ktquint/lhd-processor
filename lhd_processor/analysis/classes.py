@@ -74,15 +74,34 @@ class CrossSection:
         safe_idx = self.index if pd.notnull(self.index) else 0
         safe_L = self.L if pd.notnull(self.L) else 10.0
 
-        # New Order: Index 0 is Upstream
-        if safe_idx == 0:
-            self.location = 'Upstream'
-            self.distance = int(safe_L)
-            self.fatal_qs = None
+        # Use Relative_Loc if available, otherwise fallback to index logic
+        if 'Relative_Loc' in xs_row and pd.notnull(xs_row['Relative_Loc']):
+            self.location_label = xs_row['Relative_Loc']
+            if self.location_label == 'Upstream':
+                self.location = 'Upstream'
+                self.distance = int(safe_L)
+                self.fatal_qs = None
+            else:
+                self.location = 'Downstream'
+                # Extract number from "DownstreamX"
+                try:
+                    num = int(self.location_label.replace('Downstream', ''))
+                    self.distance = int(num * safe_L)
+                except ValueError:
+                    self.distance = int(safe_idx * safe_L) # Fallback
+                self.fatal_qs = self.parent_dam.fatal_flows
         else:
-            self.location = 'Downstream'
-            self.distance = int(safe_idx * safe_L)
-            self.fatal_qs = self.parent_dam.fatal_flows
+            # Fallback to old logic if Relative_Loc is missing
+            if safe_idx == 0:
+                self.location = 'Upstream'
+                self.location_label = 'Upstream'
+                self.distance = int(safe_L)
+                self.fatal_qs = None
+            else:
+                self.location = 'Downstream'
+                self.location_label = f'Downstream{safe_idx}'
+                self.distance = int(safe_idx * safe_L)
+                self.fatal_qs = self.parent_dam.fatal_flows
 
     def _init_rating_curve(self, xs_row):
         # rating curve equation D = a * Q**b
@@ -258,8 +277,8 @@ class CrossSection:
 
         if self.location == 'Downstream':
             try:
-                # Upstream is now index 0
-                upstream_xs = self.parent_dam.cross_sections[0]
+                # Use explicit upstream lookup
+                upstream_xs = self.parent_dam.get_upstream_xs()
                 wse_upstream = upstream_xs.wse
 
                 us_x_left = []
@@ -336,9 +355,7 @@ class CrossSection:
         ax.legend(loc='upper right')
 
         if save:
-            fname = f"{'US' if self.location == 'Upstream' else 'DS'}_XS_{self.index if self.location == 'Downstream' else 'LHD'}_{self.id}.png"
-            if self.location == 'Upstream':
-                fname = f"US_XS_LHD_{self.id}.png"
+            fname = f"{self.location_label}_XS_{self.id}.png"
             fig.savefig(os.path.join(self.fig_dir, fname), dpi=300, bbox_inches='tight')
             return fig
         else:
@@ -429,7 +446,7 @@ class CrossSection:
         self.plot_fatal_flows(ax)
         ax.legend(loc='upper left')
         if save:
-            fname = os.path.join(self.fig_dir, f"RC_{self.index}_LHD_{self.id}.png")
+            fname = os.path.join(self.fig_dir, f"RC_{self.location_label}_LHD_{self.id}.png")
             fig.savefig(fname, dpi=300, bbox_inches='tight')
             return fig
         else:
@@ -489,7 +506,7 @@ class CrossSection:
         fig = Figure(figsize=(10, 6))
         ax = fig.add_subplot(111)
         self.plot_fdc(ax)
-        fig.savefig(os.path.join(self.fig_dir, f"FDC_{self.index}_LHD_{self.id}.png"), dpi=300, bbox_inches='tight')
+        fig.savefig(os.path.join(self.fig_dir, f"FDC_{self.location_label}_LHD_{self.id}.png"), dpi=300, bbox_inches='tight')
         return fig
 
 
@@ -571,12 +588,25 @@ class Dam:
         for index, row in self.dam_gdf.iterrows():
             self.cross_sections.append(CrossSection(row, self, index=index))
 
+    def get_upstream_xs(self):
+        # Try to find by location label
+        for xs in self.cross_sections:
+            if xs.location == 'Upstream':
+                return xs
+        # Fallback: return the first one (assuming it was sorted/reversed correctly)
+        if self.cross_sections:
+            return self.cross_sections[0]
+        return None
+
     def load_results(self):
         # Use the new getter with source parameters
         xs_data = self.db.get_site_xsections(self.id, self.flowline_source, self.streamflow_source)
         
         if xs_data.empty:
             return
+        
+        upstream_xs = self.get_upstream_xs()
+        
         for xs in self.cross_sections:
             row = xs_data[xs_data['xs_index'] == xs.index]
             if not row.empty:
@@ -587,34 +617,12 @@ class Dam:
                         P = float(p_val)
                         xs.set_dam_height(P)
                         
-                    # Also load H (head) if available, or re-calculate?
-                    # The error "unsupported operand type(s) for *: 'float' and 'NoneType'"
-                    # suggests that H is None when solve_y2_adv is called in plot_flip_sequent.
-                    # We need to ensure H is set.
-                    
-                    # If H is not in the DB, we might need to re-calculate it from P and baseflow
-                    # But wait, H depends on baseflow condition.
-                    # Let's recalculate H and P from geometry if possible, OR just H from P?
-                    # Actually, H is derived from P and Q_baseflow in run_analysis.
-                    # If we are just loading results, we might not have H stored.
-                    
                     # Let's re-calculate H based on P and baseflow
                     if xs.P is not None:
                         # We need delta_wse to calculate H properly using solve_weir_geom
-                        # But we don't have delta_wse easily here without looking at upstream XS
-                        
-                        # Alternative: If we have P, we can estimate H?
-                        # No, H + P = delta_wse + y_t (roughly)
-                        
-                        # Let's look at how run_analysis does it:
-                        # H_i, P_i = solve_weir_geom(self.baseflow, self.weir_length, y_i, delta_wse)
-                        
-                        # If we are in "display mode", we might not want to re-run the full solver.
-                        # However, to get H, we need to know the hydraulic state.
                         
                         # Let's try to re-run the basic geometry solve for this XS
-                        if xs.index > 0:
-                            upstream_xs = self.cross_sections[0]
+                        if xs != upstream_xs:
                             delta_wse = upstream_xs.wse - xs.wse
                             y_i = xs.wse - xs.bed_elevation
                             
@@ -629,6 +637,9 @@ class Dam:
     def run_analysis(self):
         xs_data_list = []
         hydro_results_list = []
+        
+        upstream_xs = self.get_upstream_xs()
+        
         for i, xs in enumerate(self.cross_sections):
             xs_info = {
                 'site_id': self.id,
@@ -638,12 +649,11 @@ class Dam:
                 'depth_b': xs.b,
                 'P_height': None
             }
-            if i > 0:
+            if xs != upstream_xs:
                 # the difference in water surface elevation
                 # going from the upstream cross-section to
                 # the current cross-section
-                # Upstream is now index 0
-                delta_wse = self.cross_sections[0].wse - xs.wse
+                delta_wse = upstream_xs.wse - xs.wse
                 y_i = xs.wse - xs.bed_elevation
                 try:
                     # calculate the dam height and weir head at baseflow conditions
@@ -686,11 +696,15 @@ class Dam:
                         try:
                             y_t = xs.get_tailwater_depth(Q)
                             # Updated to pass shifted profiles
+                            
+                            # Recalculate H for this Q
+                            H_current = weir_H_simp(Q, xs.L)
+                            
                             if self.calc_mode == "Advanced":
-                                y_2 = solve_y2_adv(Q, xs.L, xs.H, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                                y_2 = solve_y2_adv(Q, xs.L, H_current, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
                             else:
-                                H = weir_H_simp(Q, xs.L)
-                                y_2 = calc_y2_simp(H, xs.P)
+                                # H = weir_H_simp(Q, xs.L) # Already calculated
+                                y_2 = calc_y2_simp(H_current, xs.P)
 
 
                             y_flip = compute_y_flip(Q, xs.L, xs.P)
