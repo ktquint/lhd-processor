@@ -170,6 +170,7 @@ def solve_y1_adv(Q, L, H, P, xs1, xs2, dist):
     Uses critical depth as a physical boundary for the root search.
     """
     if P == -9999: return -9999
+    if H <= 0: return 0.0
 
     # 1. Calculate Available Total Energy (Bernoulli)
     A_o = L * H
@@ -300,6 +301,8 @@ def weir_H_adv(Q_input, L_input, Delta_wse_input, Y_T_input):
     """
     # start with the simplified H calc
     H_guess = weir_H_simp(Q_input, L_input)
+
+    if H_guess <= 0: return 0.0
     
     def residual(H):
         P = Delta_wse_input + Y_T_input - H
@@ -405,6 +408,7 @@ def solve_y1_simp(H_input, P_input):
             C_L = 0.1 * P/H
     """
     if P_input == -9999 or H_input == -9999: return -9999
+    if H_input <= 0: return 0.0
 
     C_L = 0.1 * P_input / H_input
     
@@ -437,6 +441,7 @@ def solve_Fr_simp(H_input, P_input):
             + 0.5 * Fr**2 * (1 + C_L) = 0
     """
     if P_input == -9999 or H_input == -9999: return -9999
+    if H_input <= 0: return 0.0
 
     C_L = 0.1 * P_input / H_input
     

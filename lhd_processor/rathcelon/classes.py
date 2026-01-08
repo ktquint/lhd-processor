@@ -268,14 +268,12 @@ class RathCelonDam:
             print("    ❌ Missing input files for extraction.")
             return
 
-        # Load VDT and Curve
+        # Load Curve (Load VDT later to save memory)
         try:
-            vdt_df = pd.read_csv(self.vdt_txt, sep=',')
             curve_df = pd.read_csv(self.curvefile_csv)
-            vdt_df.columns = [c.strip() for c in vdt_df.columns]
             curve_df.columns = [c.strip() for c in curve_df.columns]
         except Exception as e:
-            print(f"    ❌ Error loading VDT/Curve: {e}")
+            print(f"    ❌ Error loading Curve: {e}")
             return
 
         # Load Flowline
@@ -335,11 +333,18 @@ class RathCelonDam:
 
         # Match points to Curve (Spatial match to find correct Row/Col in Curve)
         final_indices = []
+        
+        # Optimization: Use numpy arrays and squared distance
+        c_rows = curve_df['Row'].values
+        c_cols = curve_df['Col'].values
+        
         for idx, row in tp_gdf.iterrows():
             r = row['Row']
             c = row['Col']
-            curve_df['d_pix'] = np.sqrt((curve_df['Row'] - r) ** 2 + (curve_df['Col'] - c) ** 2)
-            best_idx = curve_df['d_pix'].idxmin()
+            # d_pix calculation
+            d2 = (c_rows - r) ** 2 + (c_cols - c) ** 2
+            best_pos = np.argmin(d2)
+            best_idx = curve_df.index[best_pos]
             final_indices.append(best_idx)
 
         extracted_curve = curve_df.loc[final_indices].copy()
@@ -347,11 +352,21 @@ class RathCelonDam:
         
         # Free memory of full curve_df
         del curve_df
+        del c_rows
+        del c_cols
         gc.collect()
         
         # Determine ID field (COMID or XS_ID)
         id_col = 'COMID' if 'COMID' in extracted_curve.columns else 'XS_ID'
         
+        # Load VDT NOW
+        try:
+            vdt_df = pd.read_csv(self.vdt_txt, sep=',')
+            vdt_df.columns = [c.strip() for c in vdt_df.columns]
+        except Exception as e:
+             print(f"    ❌ Error loading VDT: {e}")
+             return
+
         # Filter VDT
         target_ids = extracted_curve[id_col].unique()
         self.vdt_gdf = vdt_df[vdt_df[id_col].isin(target_ids)].copy()
