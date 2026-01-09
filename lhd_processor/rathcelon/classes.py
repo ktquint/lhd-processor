@@ -182,6 +182,7 @@ class RathCelonDam:
 
         self.flowline_source = dam_row.get('flowline_source', 'NHDPlus')
         self.streamflow_source = dam_row.get('streamflow_source', 'National Water Model')
+        self.baseflow_method = dam_row.get('baseflow_method', 'WSE and LiDAR Date')
 
         # ARC specific defaults
         self.create_reach_average_curve_file = 'False'
@@ -491,7 +492,7 @@ class RathCelonDam:
         self.manning_n_txt = str(dirs['LAND'] / 'Manning_n.txt')
         create_mannings_esa(self.manning_n_txt)
 
-        dems = [f for f in os.listdir(self.dem_dir) if f.endswith('.tif')]
+        dems = [f for f in os.listdir(self.dem_dir) if f.endswith(('.tif', '.tiff'))]
         for dem in dems:
             print(f"  Processing DEM: {dem}")
             self.dem_tif = str(self.dem_dir / dem)
@@ -511,7 +512,13 @@ class RathCelonDam:
 
             if not os.path.exists(self.bathy_tif):
                 print("    Running ARC simulation...")
-                self._create_arc_input_txt("known_baseflow", "rp100")
+                if self.baseflow_method == 'WSE and LiDAR Date':
+                    Q_baseflow = "known_baseflow"
+                elif self.baseflow_method == "WSE and Median Daily Flow":
+                    Q_baseflow = "qout_median"
+                else:
+                    Q_baseflow = "rp2"
+                self._create_arc_input_txt(Q_baseflow, "rp100")
                 arc_runner = Arc(self.arc_input, quiet=True)
                 try:
                     arc_runner.set_log_level('info')

@@ -20,7 +20,6 @@ except Exception as e:
     RathCelonDam = None
 
 # Module-level widgets
-project_entry = None
 database_entry = None
 dem_entry = None
 strm_entry = None
@@ -29,7 +28,6 @@ results_entry = None
 flowline_var = None
 dd_var = None
 streamflow_var = None
-baseflow_var = None
 prep_run_button = None
 rath_xlsx_entry = None
 rath_run_button = None
@@ -37,6 +35,7 @@ rath_stop_button = None
 rath_results_entry = None
 rath_flowline_var = None
 rath_streamflow_var = None
+rath_baseflow_var = None
 
 # Global Threading Event for Stopping
 stop_event = threading.Event()
@@ -44,13 +43,13 @@ stop_event = threading.Event()
 
 def setup_prep_tab(parent_tab):
     """Constructs the UI for the Prep tab, using Excel as the sole input."""
-    global project_entry, database_entry, dem_entry, strm_entry, land_use_entry, results_entry
-    global flowline_var, dd_var, streamflow_var, baseflow_var
+    global database_entry, dem_entry, strm_entry, land_use_entry, results_entry
+    global flowline_var, dd_var, streamflow_var
     global prep_run_button, rath_xlsx_entry, rath_run_button, rath_stop_button
-    global rath_results_entry, rath_flowline_var, rath_streamflow_var
+    global rath_results_entry, rath_flowline_var, rath_streamflow_var, rath_baseflow_var
 
     # --- Step 1 Frame: Prepare Data ---
-    prep_frame = ttk.LabelFrame(parent_tab, text="Step 1: Prepare Data")
+    prep_frame = ttk.LabelFrame(parent_tab, text="Step 1: Download and Prepare Data")
     prep_frame.pack(pady=10, padx=10, fill="x")
 
     # Unified frame for interleaved inputs
@@ -76,8 +75,7 @@ def setup_prep_tab(parent_tab):
     # Row counter
     r = 0
 
-    # Project & Database
-    project_entry = add_path_row(r, "Project Folder:", select_project_dir, is_file=False, must_exist=True); r+=1
+    # Database
     database_entry = add_path_row(r, "Database (.xlsx):", select_database, is_file=True, must_exist=True); r+=1
 
     # DEM
@@ -86,17 +84,14 @@ def setup_prep_tab(parent_tab):
 
     # Hydrography
     strm_entry = add_path_row(r, "Hydrography Folder:", select_strm_dir, is_file=False, must_exist=False); r+=1
-    flowline_var = add_combo(r, "   ↳ Flowline Source:", ("NHDPlus", "TDX-Hydro"), "NHDPlus"); r+=1
-    streamflow_var = add_combo(r, "   ↳ Streamflow Source:", ("National Water Model", "GEOGLOWS"), "National Water Model"); r+=1
+    flowline_var = add_combo(r, "   ↳ Flowline Source:", ("NHDPlus", "TDX-Hydro", "Both"), "NHDPlus"); r+=1
+    streamflow_var = add_combo(r, "   ↳ Streamflow Source:", ("National Water Model", "GEOGLOWS", "Both"), "National Water Model"); r+=1
 
     # Land Use
     land_use_entry = add_path_row(r, "Land Use Folder:", select_land_use_dir, is_file=False, must_exist=False); r+=1
 
-    # Results & Baseflow
-    results_entry = add_path_row(r, "Results Folder:", select_results_dir, is_file=False, must_exist=False); r+=1
-    baseflow_var = add_combo(r, "   ↳ Baseflow Estimation:",
-                             ("WSE and LiDAR Date", "WSE and Median Daily Flow", "2-yr Flow and Bank Estimation"),
-                             "WSE and LiDAR Date"); r+=1
+    # Results (Removed from Step 1 as requested, but variable kept for compatibility if needed, though unused in UI)
+    # results_entry = add_path_row(r, "Results Folder:", select_results_dir, is_file=False, must_exist=False); r+=1
 
     prep_run_button = ttk.Button(prep_frame, text="1. Prepare Data & Update Database", command=start_prep_thread)
     prep_run_button.pack(pady=10, padx=10, fill="x")
@@ -134,9 +129,18 @@ def setup_prep_tab(parent_tab):
     rath_streamflow_var = tk.StringVar(value="National Water Model")
     ttk.Combobox(opts_frame, textvariable=rath_streamflow_var, state="readonly", values=("National Water Model", "GEOGLOWS")).grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
 
-    # Row 3: Buttons
+    # Row 3: Baseflow Estimation
+    bf_frame = ttk.Frame(rath_frame)
+    bf_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=5)
+    bf_frame.columnconfigure(1, weight=1)
+
+    ttk.Label(bf_frame, text="Baseflow Estimation:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+    rath_baseflow_var = tk.StringVar(value="WSE and LiDAR Date")
+    ttk.Combobox(bf_frame, textvariable=rath_baseflow_var, state="readonly", values=("WSE and LiDAR Date", "WSE and Median Daily Flow", "2-yr Flow and Bank Estimation")).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+
+    # Row 4: Buttons
     btn_frame = ttk.Frame(rath_frame)
-    btn_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=10)
+    btn_frame.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=10)
     btn_frame.columnconfigure(0, weight=1)
     btn_frame.columnconfigure(1, weight=1)
 
@@ -149,36 +153,6 @@ def setup_prep_tab(parent_tab):
 
 # --- Event Handlers (File Dialogs) ---
 
-def select_project_dir():
-    path = filedialog.askdirectory()
-    if not path: return
-    project_entry.delete(0, tk.END)
-    project_entry.insert(0, path)
-
-    try:
-        files = [f for f in os.listdir(path) if f.endswith('.xlsx')]
-        if files:
-            db_path = os.path.join(path, files[0])
-            database_entry.delete(0, tk.END)
-            database_entry.insert(0, db_path)
-            rath_xlsx_entry.delete(0, tk.END)
-            rath_xlsx_entry.insert(0, db_path)
-
-        # Auto-fill suggested folders
-        for entry, folder in [(dem_entry, "DEM"), (strm_entry, "STRM"), (land_use_entry, "LAND"),
-                              (results_entry, "Results")]:
-            entry.delete(0, tk.END)
-            entry.insert(0, os.path.join(path, folder))
-        
-        # Also fill rath results
-        rath_results_entry.delete(0, tk.END)
-        rath_results_entry.insert(0, os.path.join(path, "Results"))
-
-        utils.set_status("Project paths loaded.")
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to load paths: {e}")
-
-
 def select_database():
     f = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
     if f:
@@ -186,6 +160,23 @@ def select_database():
         database_entry.insert(0, f)
         rath_xlsx_entry.delete(0, tk.END)
         rath_xlsx_entry.insert(0, f)
+        
+        # Auto-fill based on parent directory
+        try:
+            project_path = os.path.dirname(f)
+            
+            # Auto-fill suggested folders
+            for entry, folder in [(dem_entry, "DEM"), (strm_entry, "STRM"), (land_use_entry, "LAND")]:
+                entry.delete(0, tk.END)
+                entry.insert(0, os.path.join(project_path, folder))
+            
+            # Also fill rath results
+            rath_results_entry.delete(0, tk.END)
+            rath_results_entry.insert(0, os.path.join(project_path, "Results"))
+            
+            utils.set_status("Project paths loaded from database location.")
+        except Exception as e:
+            print(f"Error auto-filling paths: {e}")
 
 
 def select_dem_dir():
@@ -212,8 +203,8 @@ def select_land_use_dir():
 def select_results_dir():
     d = filedialog.askdirectory()
     if d: 
-        results_entry.delete(0, tk.END)
-        results_entry.insert(0, d)
+        # results_entry.delete(0, tk.END)
+        # results_entry.insert(0, d)
         rath_results_entry.delete(0, tk.END)
         rath_results_entry.insert(0, d)
 
@@ -259,8 +250,7 @@ def threaded_prepare_data():
         dem_folder = dem_entry.get()
         strm_folder = strm_entry.get()
         land_folder = land_use_entry.get() if land_use_entry else None
-        results_folder = results_entry.get()
-        baseflow_method = baseflow_var.get()
+        results_folder = rath_results_entry.get() # Use the one from Step 2 or default
 
         if not os.path.exists(xlsx_path):
             messagebox.showerror("Error", "Database file not found.")
@@ -310,7 +300,7 @@ def threaded_prepare_data():
         utils.set_status("Stage 4/4: Finalizing hydraulics...")
         with ThreadPoolExecutor(max_workers=4) as executor:
             for sid in site_ids: executor.submit(worker_assign_hydraulics, sid, db, results_folder, land_folder,
-                                                 baseflow_method, streamflow_source)
+                                                 "WSE and LiDAR Date", streamflow_source)
 
         # Save and point to Excel for Step 2
         utils.set_status("Saving database...")
@@ -360,11 +350,14 @@ def threaded_run_rathcelon():
         # But user might change them in Step 2 UI
         fl_source = rath_flowline_var.get()
         sf_source = rath_streamflow_var.get()
+        bf_method = rath_baseflow_var.get()
         
         if fl_source:
             df['flowline_source'] = fl_source
         if sf_source:
             df['streamflow_source'] = sf_source
+        if bf_method:
+            df['baseflow_method'] = bf_method
 
         dams = df.to_dict(orient='records')
         
