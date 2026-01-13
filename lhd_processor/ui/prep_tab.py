@@ -300,7 +300,7 @@ def threaded_prepare_data():
         utils.set_status("Stage 4/4: Finalizing hydraulics...")
         with ThreadPoolExecutor(max_workers=4) as executor:
             for sid in site_ids: executor.submit(worker_assign_hydraulics, sid, db, results_folder, land_folder,
-                                                 "WSE and LiDAR Date", streamflow_source)
+                                                 "WSE and LiDAR Date", streamflow_source, flowline_source)
 
         # Save and point to Excel for Step 2
         utils.set_status("Saving database...")
@@ -441,9 +441,11 @@ def worker_assign_dem(sid, db, dem_folder, dem_resolution):
     dam.save_changes()
 
 
-def worker_assign_hydraulics(sid, db, results_folder, land_folder, baseflow_method, streamflow_source):
+def worker_assign_hydraulics(sid, db, results_folder, land_folder, baseflow_method, streamflow_source, flowline_source):
     dam = PrepDam(sid, db)
     dam.set_output_dir(results_folder)
+    dam.set_flowline_source(flowline_source)
+    dam.set_streamflow_source(streamflow_source)
     dam.assign_land(land_folder)
     dam.est_dem_baseflow(baseflow_method)
     dam.est_fatal_flows(streamflow_source)

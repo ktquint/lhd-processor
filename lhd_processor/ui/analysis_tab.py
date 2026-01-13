@@ -83,7 +83,7 @@ def setup_analysis_tab(parent_tab):
     run_btn.grid(row=5, column=0, columnspan=3, padx=5, pady=10, sticky=tk.EW)
 
     # --- Figure Frame ---
-    fig_frame = ttk.LabelFrame(parent_tab, text="Select Figures to Display")
+    fig_frame = ttk.LabelFrame(parent_tab, text="4. Select Figures to Display")
     fig_frame.pack(pady=10, padx=10, fill="x")
     fig_frame.columnconfigure(1, weight=1)
 
@@ -217,15 +217,14 @@ def process_single_dam_analysis(dam_id, xlsx_path, res_dir, calc_mode, flowline_
 
 
 # --- Helpers ---
-def generate_summary_charts(db_path, filter_id=None):
+def generate_summary_charts(db_path, f_source, s_source, filter_id=None):
     figures_list = []
     try:
         db = DatabaseManager(db_path)
         
         # Determine which sheet to read based on current selection
         # (Assuming user wants charts for the currently selected sources)
-        f_source = flowline_source_var.get()
-        s_source = streamflow_source_var.get()
+        # f_source and s_source passed as arguments
         
         # Use the manager's helper (we can access it via a temporary instance or just replicate logic)
         # Since we already have 'db' instance, let's use the public getter logic manually or add a helper
@@ -347,13 +346,13 @@ def generate_summary_charts(db_path, filter_id=None):
 
 
 # --- Threaded Logic ---
-def threaded_analysis(mode):
+def threaded_analysis(mode, params):
     try:
-        xlsx_path = db_entry.get()
-        res_dir = res_entry.get()
+        xlsx_path = params["xlsx_path"]
+        res_dir = params["res_dir"]
         
-        f_source = flowline_source_var.get()
-        s_source = streamflow_source_var.get()
+        f_source = params["f_source"]
+        s_source = params["s_source"]
 
         db = DatabaseManager(xlsx_path)
         valid_ids = [site_id for site_id in db.sites['site_id']
@@ -410,22 +409,22 @@ def threaded_analysis(mode):
         run_btn.config(state=tk.NORMAL)
 
 
-def threaded_display(mode):
+def threaded_display(mode, params):
     figs = []
     try:
-        xlsx_path = db_entry.get()
-        res_dir = res_entry_display.get()
-        dam_sel = dam_dropdown.get()
+        xlsx_path = params["xlsx_path"]
+        res_dir = params["res_dir"]
+        dam_sel = params["dam_sel"]
         
-        f_source = flowline_source_var.get()
-        s_source = streamflow_source_var.get()
+        f_source = params["f_source"]
+        s_source = params["s_source"]
 
         # 1. Determine which dams to process based on selection
         target_dams = []
         filter_id = None  # Default to None (implies "All" for summary charts)
 
         if dam_sel == "All Dams":
-            all_values = dam_dropdown["values"]
+            all_values = params["dam_values"]
             if len(all_values) > 1:
                 target_dams = [int(x) for x in all_values[1:]]
             else:
@@ -441,10 +440,10 @@ def threaded_display(mode):
                 pass
 
         # 2. Summary Charts
-        if chk_bar.get():
+        if params["chk_bar"]:
             utils.set_status("Generating summary charts...")
             # Pass the filter_id to restrict the chart if a specific dam is selected
-            figs.extend(generate_summary_charts(xlsx_path, filter_id=filter_id))
+            figs.extend(generate_summary_charts(xlsx_path, f_source, s_source, filter_id=filter_id))
 
         # 3. Dam Specific Figures (Iterate through target_dams)
         if target_dams:
@@ -470,23 +469,23 @@ def threaded_display(mode):
                     # Helper to add and save figures
                     # Note: The plot methods in classes.py already default to save=True
 
-                    if chk_xs.get():
+                    if params["chk_xs"]:
                         # This works purely on geometry loaded in __init__
                         for xs in dam.cross_sections:
                             figs.append((xs.plot_cross_section(), f"Dam {d_id} XS {xs.index}"))
 
-                    if chk_rc.get():
+                    if params["chk_rc"]:
                         # This uses the P values loaded by dam.load_results()
                         for xs in dam.cross_sections[1:]:
                             figs.append((xs.create_combined_fig(), f"Dam {d_id} RC {xs.index}"))
 
-                    if chk_map.get():
+                    if params["chk_map"]:
                         figs.append((dam.plot_map(), f"Dam {d_id} Map"))
 
-                    if chk_wsp.get():
+                    if params["chk_wsp"]:
                         figs.append((dam.plot_water_surface(), f"Dam {d_id} WSE"))
 
-                    if chk_fdc.get():
+                    if params["chk_fdc"]:
                         for xs in dam.cross_sections[1:]:
                             figs.append((xs.create_combined_fdc(), f"Dam {d_id} FDC {xs.index}"))
 
@@ -510,10 +509,34 @@ def threaded_display(mode):
 def start_analysis():
     run_btn.config(state=tk.DISABLED)
     mode = calc_mode_var.get()
-    threading.Thread(target=threaded_analysis, args=(mode,), daemon=True).start()
+    
+    params = {
+        "xlsx_path": db_entry.get(),
+        "res_dir": res_entry.get(),
+        "f_source": flowline_source_var.get(),
+        "s_source": streamflow_source_var.get(),
+    }
+    
+    threading.Thread(target=threaded_analysis, args=(mode, params), daemon=True).start()
 
 
 def start_display():
     display_btn.config(state=tk.DISABLED)
     mode = calc_mode_var.get()
-    threading.Thread(target=threaded_display, args=(mode,), daemon=True).start()
+    
+    params = {
+        "xlsx_path": db_entry.get(),
+        "res_dir": res_entry_display.get(),
+        "dam_sel": dam_dropdown.get(),
+        "dam_values": dam_dropdown["values"],
+        "f_source": flowline_source_var.get(),
+        "s_source": streamflow_source_var.get(),
+        "chk_xs": chk_xs.get(),
+        "chk_rc": chk_rc.get(),
+        "chk_map": chk_map.get(),
+        "chk_wsp": chk_wsp.get(),
+        "chk_fdc": chk_fdc.get(),
+        "chk_bar": chk_bar.get(),
+    }
+    
+    threading.Thread(target=threaded_display, args=(mode, params), daemon=True).start()

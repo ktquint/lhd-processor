@@ -201,6 +201,28 @@ class DatabaseManager:
                 updates_df['site_id'] = site_id
                 self.incidents = pd.concat([self.incidents, updates_df], ignore_index=True)
 
+    def update_site_results(self, site_id, results_df, flowline_source, streamflow_source):
+        """
+        Updates the results for a specific site and source combination.
+        This was missing in the previous version but called in prep/classes.py.
+        """
+        with self.lock:
+            site_id = int(site_id)
+            _, res_sheet = self._get_sheet_names(flowline_source, streamflow_source)
+
+            current_res = self.results.get(res_sheet, pd.DataFrame(columns=self.results_schema))
+            
+            # Remove existing results for this site
+            current_res = current_res[current_res['site_id'] != site_id]
+
+            if not results_df.empty:
+                new_res = results_df.copy()
+                new_res['site_id'] = site_id
+                new_res = self._enforce_schema(new_res, self.results_schema)
+                current_res = pd.concat([current_res, new_res], ignore_index=True)
+
+            self.results[res_sheet] = current_res
+
     def update_analysis_results(self, site_id, xs_data, hydraulic_data, flowline_source, streamflow_source):
         with self.lock:
             site_id = int(site_id)

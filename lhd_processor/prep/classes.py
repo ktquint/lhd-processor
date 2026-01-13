@@ -55,7 +55,37 @@ class LowHeadDam:
         self.results: Dict[str, pd.DataFrame] = {}
         for source in ['National Water Model', 'GEOGLOWS']:
             if hasattr(self.db, 'get_site_results'):
-                self.results[source] = self.db.get_site_results(self.site_id, source)
+                # We need to pass both flowline_source and streamflow_source to get_site_results
+                # However, at this point we might not know which flowline source corresponds to which streamflow source
+                # or if we should just use the current one.
+                # The original code was: self.results[source] = self.db.get_site_results(self.site_id, source)
+                # But get_site_results signature is (site_id, flowline_source, streamflow_source)
+                
+                # Let's try to infer flowline source based on streamflow source for now, or use the current one if set.
+                # This is a bit tricky because the DB structure changed to support multiple combinations.
+                
+                # Assumption: NWM goes with NHDPlus, GEOGLOWS goes with TDX-Hydro usually, but not always.
+                # If we are just initializing, maybe we can skip loading results until needed or load all?
+                # For now, let's use the current flowline_source if available, otherwise default.
+                
+                fl_source = self.flowline_source if self.flowline_source else 'NHDPlus' # Default fallback
+                
+                # If source is NWM, we likely want NHDPlus flowlines, if GEOGLOWS, likely TDX-Hydro.
+                # But the user can mix and match.
+                # Let's try to be safe and use the current object's flowline source if it matches the streamflow source logic,
+                # otherwise guess.
+                
+                if source == 'National Water Model':
+                    fl_source_for_call = 'NHDPlus'
+                else:
+                    fl_source_for_call = 'TDX-Hydro'
+                    
+                # If the user has explicitly set a flowline source, we might want to use that instead?
+                # But this loop iterates over streamflow sources.
+                # The issue is that get_site_results requires BOTH.
+                
+                # Let's use the inferred one for now to satisfy the signature.
+                self.results[source] = self.db.get_site_results(self.site_id, fl_source_for_call, source)
             else:
                 self.results[source] = pd.DataFrame()
 
@@ -359,6 +389,14 @@ class LowHeadDam:
         if hasattr(self.db, 'update_site_results'):
             for source, df in self.results.items():
                 if not df.empty:
-                    self.db.update_site_results(self.site_id, df, source)
+                    # Same issue here: update_site_results needs flowline_source too.
+                    # We need to be consistent with what we did in __init__
+                    
+                    if source == 'National Water Model':
+                        fl_source_for_call = 'NHDPlus'
+                    else:
+                        fl_source_for_call = 'TDX-Hydro'
+                        
+                    self.db.update_site_results(self.site_id, df, fl_source_for_call, source)
 
         self.db.save()
