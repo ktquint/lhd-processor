@@ -61,7 +61,17 @@ def setup_prep_tab(parent_tab):
         ttk.Label(input_frame, text=label_text).grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
         entry = ttk.Entry(input_frame)
         entry.grid(row=row, column=1, padx=5, pady=5, sticky=tk.EW)
-        utils.bind_path_validation(entry, is_file=is_file, must_exist=must_exist)
+        
+        # Bind focus out event to check existence and show popup if needed
+        if must_exist:
+            def check_exists(event):
+                path = entry.get()
+                if path:
+                    exists = os.path.isfile(path) if is_file else os.path.isdir(path)
+                    if not exists:
+                        messagebox.showwarning("Path Not Found", f"The specified path does not exist:\n{path}")
+            entry.bind("<FocusOut>", check_exists)
+
         ttk.Button(input_frame, text="Select...", command=cmd).grid(row=row, column=2, padx=5, pady=5)
         return entry
 
@@ -105,14 +115,21 @@ def setup_prep_tab(parent_tab):
     ttk.Label(rath_frame, text="Excel Database:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
     rath_xlsx_entry = ttk.Entry(rath_frame)
     rath_xlsx_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
-    utils.bind_path_validation(rath_xlsx_entry, is_file=True, must_exist=True)
+    
+    # Bind focus out event for RathCelon Excel entry
+    def check_rath_xlsx_exists(event):
+        path = rath_xlsx_entry.get()
+        if path and not os.path.isfile(path):
+            messagebox.showwarning("Path Not Found", f"The specified Excel file does not exist:\n{path}")
+    rath_xlsx_entry.bind("<FocusOut>", check_rath_xlsx_exists)
+
     ttk.Button(rath_frame, text="Select...", command=select_rath_xlsx).grid(row=0, column=2, padx=5, pady=5)
 
     # Row 1: Results Folder (Moved here)
     ttk.Label(rath_frame, text="Results Folder:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
     rath_results_entry = ttk.Entry(rath_frame)
     rath_results_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
-    utils.bind_path_validation(rath_results_entry, is_file=False, must_exist=False)
+    # utils.bind_path_validation(rath_results_entry, is_file=False, must_exist=False)
     ttk.Button(rath_frame, text="Select...", command=select_rath_results_dir).grid(row=1, column=2, padx=5, pady=5)
 
     # Row 2: Flowline Source & Streamflow Source

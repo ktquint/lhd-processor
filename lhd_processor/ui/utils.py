@@ -68,50 +68,10 @@ def bind_path_validation(entry_widget, is_file=True, must_exist=True):
     """
     Binds an event to an Entry widget.
 
-    Colors:
-    - WHITE: Path exists, acceptable missing output, or empty (High contrast neutral).
-    - RED: Path is missing, but is required (Error).
-
-    Args:
-        entry_widget: The tkinter Entry widget.
-        is_file (bool): True if checking for a file, False for a directory.
-        must_exist (bool): If True, missing path turns RED. If False, missing path stays neutral (white).
+    NOTE: Color validation logic has been removed to support system themes (Light/Dark mode).
+    This function is kept for compatibility but performs no actions.
     """
-
-    def check_path(event=None):
-        path = entry_widget.get()
-        # Default to neutral color (white for dark theme visibility)
-        neutral_color = "white"
-
-        if not path:
-            entry_widget.config(foreground=neutral_color)
-            return
-
-        # 1. Check if it currently exists on disk
-        if is_file:
-            exists = os.path.isfile(path)
-        else:
-            exists = os.path.isdir(path)
-
-        # 2. Apply Logic/Colors
-        if exists:
-            # Path exists: neutral color
-            entry_widget.config(foreground=neutral_color)
-        else:
-            # It does NOT exist
-            if must_exist:
-                # Critical Error: It MUST exist (e.g., Input Data)
-                entry_widget.config(foreground="red")
-            else:
-                # Acceptable missing output: neutral color
-                entry_widget.config(foreground=neutral_color)
-
-    # Trigger on typing (KeyRelease) and leaving the box (FocusOut)
-    entry_widget.bind("<KeyRelease>", check_path)
-    entry_widget.bind("<FocusOut>", check_path)
-
-    # Check immediately
-    check_path()
+    pass
 
 
 class ToolTip(object):
