@@ -130,7 +130,6 @@ def main():
         try:
             settings = {
                 # Prep Tab - Paths
-                "project_dir": prep_tab.project_entry.get(),
                 "database_path": prep_tab.database_entry.get(),
                 "dem_dir": prep_tab.dem_entry.get(),
                 "strm_dir": prep_tab.strm_entry.get(),
