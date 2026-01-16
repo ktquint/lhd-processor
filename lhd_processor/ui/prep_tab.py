@@ -240,6 +240,22 @@ def select_rath_xlsx():
 
 # --- Logic and Worker Functions ---
 
+def create_mannings_esa(manning_txt):
+    """Writes standard Manning's n look-up table for ESA WorldCover."""
+    with open(manning_txt, 'w') as f:
+        f.write('LC_ID\tDescription\tManning_n\n')
+        f.write('10\tTree Cover\t0.120\n')
+        f.write('20\tShrubland\t0.050\n')
+        f.write('30\tGrassland\t0.030\n')
+        f.write('40\tCropland\t0.035\n')
+        f.write('50\tBuiltup\t0.075\n')
+        f.write('60\tBare\t0.030\n')
+        f.write('70\tSnowIce\t0.030\n')
+        f.write('80\tWater\t0.030\n')
+        f.write('90\tHerbaceous Wetland\t0.100\n')
+        f.write('95\tMangroves\t0.100\n')
+        f.write('100\tMossLichen\t0.100\n')
+
 def process_single_dam_rathcelon(dam_dict):
     """Dask worker processing a single dam dictionary from the Excel row."""
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -277,6 +293,11 @@ def threaded_prepare_data():
         os.makedirs(strm_folder, exist_ok=True)
         if land_folder: os.makedirs(land_folder, exist_ok=True)
         os.makedirs(results_folder, exist_ok=True)
+
+        # Create Manning's n file in the LAND folder
+        if land_folder:
+            manning_txt = os.path.join(land_folder, 'Manning_n.txt')
+            create_mannings_esa(manning_txt)
 
         db = DatabaseManager(xlsx_path)
         site_ids = db.sites['site_id'].tolist()
@@ -465,4 +486,5 @@ def worker_assign_hydraulics(sid, db, results_folder, land_folder, baseflow_meth
     dam.assign_land(land_folder)
     dam.est_dem_baseflow(baseflow_method)
     dam.est_fatal_flows(streamflow_source)
+    dam.generate_stream_raster()
     dam.save_changes()

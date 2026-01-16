@@ -1,17 +1,100 @@
+import gc
 import os
 import re
-import json
 import datetime
+import geoglows
+import rasterio
+import numpy as np
 import pandas as pd
 import xarray as xr
 import geopandas as gpd
-import geoglows
+from rasterio.features import rasterize
 from typing import Dict, Any, Optional, List
+
 from .download_geospatial_data import (download_dem,
                                        download_nhd_flowline,
                                        download_tdx_flowline,
                                        download_land_raster,
                                        find_water_gpstime)
+
+try:
+    import gdal
+    import gdal_array
+except ImportError:
+    from osgeo import gdal, ogr, osr, gdal_array
+
+
+# helper functions to rasterize the flowlines
+def read_raster_w_gdal(input_raster: str):
+    """Reads raster data into an array and returns spatial metadata."""
+    dataset = gdal.Open(input_raster, gdal.GA_ReadOnly)
+    geotransform = dataset.GetGeoTransform()
+    band = dataset.GetRasterBand(1)
+    raster_array = band.ReadAsArray()
+    ncols, nrows = dataset.RasterXSize, dataset.RasterYSize
+    cellsize = geotransform[1]
+    yll = geotransform[3] - nrows * abs(geotransform[5])
+    yur = geotransform[3]
+    xll = geotransform[0]
+    xur = xll + ncols * geotransform[1]
+    lat = abs((yll + yur) / 2.0)
+    raster_proj = dataset.GetProjectionRef()
+    del dataset, band
+    return raster_array, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, raster_proj
+
+
+def write_output_raster(s_output_filename, raster_data, dem_geotransform, dem_projection):
+    """Writes a numpy array to a GeoTIFF file."""
+    gdal_dtype = gdal_array.NumericTypeCodeToGDALTypeCode(raster_data.dtype) or gdal.GDT_Float32
+    n_rows, n_cols = raster_data.shape
+    driver = gdal.GetDriverByName("GTiff")
+    ds = driver.Create(s_output_filename, xsize=n_cols, ysize=n_rows, bands=1, eType=gdal_dtype)
+    ds.SetGeoTransform(dem_geotransform)
+    ds.SetProjection(dem_projection)
+    ds.GetRasterBand(1).WriteArray(raster_data)
+    ds.FlushCache()
+    del ds
+
+
+def clean_strm_raster(strm_tif: str, clean_strm_tif: str) -> None:
+    """Robust filter to remove single cells and redundant thickness for ARC compatibility."""
+    (SN, ncols, nrows, cellsize, yll, yur, xll, xur, lat, gt, proj) = read_raster_w_gdal(strm_tif)
+    B = np.zeros((nrows + 2, ncols + 2))
+    B[1:nrows + 1, 1:ncols + 1] = np.where(SN > 0, SN, 0)
+
+    # Free memory of original raster array
+    del SN
+    gc.collect()
+
+    (RR, CC) = np.where(B > 0)
+    num_nonzero = len(RR)
+
+    for filterpass in range(2):
+        for x in range(num_nonzero):
+            r, c = RR[x], CC[x]
+            if B[r, c] > 0:
+                if B[r, c + 1] == 0 and B[r, c - 1] == 0:
+                    if (B[r + 1, c - 1:c + 2].sum() == 0 and B[r - 1, c] > 0) or \
+                            (B[r - 1, c - 1:c + 2].sum() == 0 and B[r + 1, c] > 0):
+                        B[r, c] = 0
+                elif B[r + 1, c] == B[r, c] and (B[r + 1, c + 1] == B[r, c] or B[r + 1, c - 1] == B[r, c]):
+                    if sum(B[r + 1, c - 1:c + 2]) == B[r, c] * 2:
+                        B[r + 1, c] = 0
+    write_output_raster(clean_strm_tif, B[1:nrows + 1, 1:ncols + 1], gt, proj)
+
+
+def create_arc_strm_raster(StrmSHP, output_raster_path, DEM_File, value_field):
+    """
+        Rasterizes a shapefile to match the extent and resolution of a DEM.
+    """
+    gdf = gpd.read_file(StrmSHP)
+    with rasterio.open(DEM_File) as ref:
+        meta, ref_transform, out_shape, crs = ref.meta.copy(), ref.transform, (ref.height, ref.width), ref.crs
+    if gdf.crs != crs: gdf = gdf.to_crs(crs)
+    shapes = [(geom, val) for geom, val in zip(gdf.geometry, gdf[value_field])]
+    raster = rasterize(shapes=shapes, out_shape=out_shape, fill=0, transform=ref_transform, dtype='int32')
+    meta.update({"driver": "GTiff", "dtype": "int32", "count": 1, "nodata": 0})
+    with rasterio.open(output_raster_path, 'w', **meta) as dst: dst.write(raster, 1)
 
 
 class LowHeadDam:
@@ -55,36 +138,11 @@ class LowHeadDam:
         self.results: Dict[str, pd.DataFrame] = {}
         for source in ['National Water Model', 'GEOGLOWS']:
             if hasattr(self.db, 'get_site_results'):
-                # We need to pass both flowline_source and streamflow_source to get_site_results
-                # However, at this point we might not know which flowline source corresponds to which streamflow source
-                # or if we should just use the current one.
-                # The original code was: self.results[source] = self.db.get_site_results(self.site_id, source)
-                # But get_site_results signature is (site_id, flowline_source, streamflow_source)
-                
-                # Let's try to infer flowline source based on streamflow source for now, or use the current one if set.
-                # This is a bit tricky because the DB structure changed to support multiple combinations.
-                
-                # Assumption: NWM goes with NHDPlus, GEOGLOWS goes with TDX-Hydro usually, but not always.
-                # If we are just initializing, maybe we can skip loading results until needed or load all?
-                # For now, let's use the current flowline_source if available, otherwise default.
-                
-                fl_source = self.flowline_source if self.flowline_source else 'NHDPlus' # Default fallback
-                
-                # If source is NWM, we likely want NHDPlus flowlines, if GEOGLOWS, likely TDX-Hydro.
-                # But the user can mix and match.
-                # Let's try to be safe and use the current object's flowline source if it matches the streamflow source logic,
-                # otherwise guess.
-                
                 if source == 'National Water Model':
                     fl_source_for_call = 'NHDPlus'
                 else:
                     fl_source_for_call = 'TDX-Hydro'
-                    
-                # If the user has explicitly set a flowline source, we might want to use that instead?
-                # But this loop iterates over streamflow sources.
-                # The issue is that get_site_results requires BOTH.
-                
-                # Let's use the inferred one for now to satisfy the signature.
+
                 self.results[source] = self.db.get_site_results(self.site_id, fl_source_for_call, source)
             else:
                 self.results[source] = pd.DataFrame()
@@ -369,6 +427,53 @@ class LowHeadDam:
             land_raster = download_land_raster(self.site_id, str(self.dem_path), land_dir)
             self.land_cover_path = land_raster
             self.site_data['land_raster'] = land_raster
+            
+    def generate_stream_raster(self):
+        """Generates the clean stream raster required for ARC."""
+        if not self.dem_path or not os.path.exists(self.dem_path):
+            print(f"Dam {self.site_id}: Skipping stream raster generation (Missing DEM).")
+            return
+
+        # Determine flowline path, ID field, and ID value
+        flowline_path = None
+        rivid_field = None
+        identifier = None
+        prefix = None
+
+        if self.flowline_source == 'TDX-Hydro':
+            flowline_path = self.site_data.get('flowline_path_tdx')
+            rivid_field = 'LINKNO'
+            identifier = self.geoglows_id
+            prefix = 'geo'
+        else:
+            flowline_path = self.site_data.get('flowline_path_nhd')
+            rivid_field = 'nhdplusid'
+            identifier = self.nwm_id
+            prefix = 'nhd'
+
+        if not flowline_path or not os.path.exists(flowline_path):
+             print(f"Dam {self.site_id}: Skipping stream raster generation (Missing Flowline).")
+             return
+        
+        if not identifier:
+             print(f"Dam {self.site_id}: Skipping stream raster generation (Missing ID).")
+             return
+
+        # Output directory is the same as flowline directory
+        strm_dir = os.path.dirname(flowline_path)
+        
+        # Naming convention: prefix_{id}_clean.tif
+        clean_strm_tif = os.path.join(strm_dir, f'{prefix}_{identifier}_clean.tif')
+        raw_strm_tif = clean_strm_tif.replace('_clean.tif', '.tif')
+
+        print(f"Dam {self.site_id}: Generating stream raster at {clean_strm_tif}...")
+        try:
+            create_arc_strm_raster(flowline_path, raw_strm_tif, self.dem_path, rivid_field)
+            clean_strm_raster(raw_strm_tif, clean_strm_tif)
+            self.site_data['strm_tif_clean'] = clean_strm_tif
+        except Exception as e:
+            print(f"Dam {self.site_id}: Error generating stream raster: {e}")
+
 
     def save_changes(self):
         self.site_data['reach_id'] = self.nwm_id

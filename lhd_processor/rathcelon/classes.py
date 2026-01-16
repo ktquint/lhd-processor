@@ -5,8 +5,7 @@ import gc
 from pathlib import Path
 
 # third-party imports
-from arc import Arc  # automated-rating-curve-
-# generator
+from arc import Arc  # automated-rating-curve-generator
 
 try:
     import gdal
@@ -20,116 +19,10 @@ import pandas as pd
 import geopandas as gpd
 from shapely.ops import linemerge
 from pyproj import CRS, Transformer
-from rasterio.features import rasterize
 from shapely.geometry import Point, LineString
 
 
 # --- GEOSPATIAL UTILITIES ---
-
-def get_raster_info(dem_tif: str):
-    """Retrieves the geographic details and projection of a raster."""
-    with rasterio.open(dem_tif) as dataset:
-        geoTransform = dataset.transform
-        ncols = dataset.width
-        nrows = dataset.height
-        minx = geoTransform.c
-        dx = geoTransform.a
-        maxy = geoTransform.f
-        dy = geoTransform.e
-        maxx = minx + dx * ncols
-        miny = maxy + dy * nrows
-        Rast_Projection = dataset.crs.to_wkt()
-    return minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection
-
-
-def read_raster_w_gdal(input_raster: str):
-    """Reads raster data into an array and returns spatial metadata."""
-    dataset = gdal.Open(input_raster, gdal.GA_ReadOnly)
-    geotransform = dataset.GetGeoTransform()
-    band = dataset.GetRasterBand(1)
-    raster_array = band.ReadAsArray()
-    ncols, nrows = dataset.RasterXSize, dataset.RasterYSize
-    cellsize = geotransform[1]
-    yll = geotransform[3] - nrows * abs(geotransform[5])
-    yur = geotransform[3]
-    xll = geotransform[0]
-    xur = xll + ncols * geotransform[1]
-    lat = abs((yll + yur) / 2.0)
-    raster_proj = dataset.GetProjectionRef()
-    del dataset, band
-    return raster_array, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, raster_proj
-
-
-def write_output_raster(s_output_filename, raster_data, dem_geotransform, dem_projection):
-    """Writes a numpy array to a GeoTIFF file."""
-    gdal_dtype = gdal_array.NumericTypeCodeToGDALTypeCode(raster_data.dtype) or gdal.GDT_Float32
-    n_rows, n_cols = raster_data.shape
-    driver = gdal.GetDriverByName("GTiff")
-    ds = driver.Create(s_output_filename, xsize=n_cols, ysize=n_rows, bands=1, eType=gdal_dtype)
-    ds.SetGeoTransform(dem_geotransform)
-    ds.SetProjection(dem_projection)
-    ds.GetRasterBand(1).WriteArray(raster_data)
-    ds.FlushCache()
-    del ds
-
-
-def clean_strm_raster(strm_tif: str, clean_strm_tif: str) -> None:
-    """Robust filter to remove single cells and redundant thickness for ARC compatibility."""
-    (SN, ncols, nrows, cellsize, yll, yur, xll, xur, lat, gt, proj) = read_raster_w_gdal(strm_tif)
-    B = np.zeros((nrows + 2, ncols + 2))
-    B[1:nrows + 1, 1:ncols + 1] = np.where(SN > 0, SN, 0)
-    
-    # Free memory of original raster array
-    del SN
-    gc.collect()
-    
-    (RR, CC) = np.where(B > 0)
-    num_nonzero = len(RR)
-
-    for filterpass in range(2):
-        for x in range(num_nonzero):
-            r, c = RR[x], CC[x]
-            if B[r, c] > 0:
-                if B[r, c + 1] == 0 and B[r, c - 1] == 0:
-                    if (B[r + 1, c - 1:c + 2].sum() == 0 and B[r - 1, c] > 0) or \
-                            (B[r - 1, c - 1:c + 2].sum() == 0 and B[r + 1, c] > 0):
-                        B[r, c] = 0
-                elif B[r + 1, c] == B[r, c] and (B[r + 1, c + 1] == B[r, c] or B[r + 1, c - 1] == B[r, c]):
-                    if sum(B[r + 1, c - 1:c + 2]) == B[r, c] * 2:
-                        B[r + 1, c] = 0
-    write_output_raster(clean_strm_tif, B[1:nrows + 1, 1:ncols + 1], gt, proj)
-
-
-def create_arc_strm_raster(StrmSHP, output_raster_path, DEM_File, value_field):
-    """
-        Rasterizes a shapefile to match the extent and resolution of a DEM.
-    """
-    gdf = gpd.read_file(StrmSHP)
-    with rasterio.open(DEM_File) as ref:
-        meta, ref_transform, out_shape, crs = ref.meta.copy(), ref.transform, (ref.height, ref.width), ref.crs
-    if gdf.crs != crs: gdf = gdf.to_crs(crs)
-    shapes = [(geom, val) for geom, val in zip(gdf.geometry, gdf[value_field])]
-    raster = rasterize(shapes=shapes, out_shape=out_shape, fill=0, transform=ref_transform, dtype='int32')
-    meta.update({"driver": "GTiff", "dtype": "int32", "count": 1, "nodata": 0})
-    with rasterio.open(output_raster_path, 'w', **meta) as dst: dst.write(raster, 1)
-
-
-def create_mannings_esa(manning_txt):
-    """Writes standard Manning's n look-up table for ESA WorldCover."""
-    with open(manning_txt, 'w') as f:
-        f.write('LC_ID\tDescription\tManning_n\n')
-        f.write('10\tTree Cover\t0.120\n')
-        f.write('20\tShrubland\t0.050\n')
-        f.write('30\tGrassland\t0.030\n')
-        f.write('40\tCropland\t0.035\n')
-        f.write('50\tBuiltup\t0.075\n')
-        f.write('60\tBare\t0.030\n')
-        f.write('70\tSnowIce\t0.030\n')
-        f.write('80\tWater\t0.030\n')
-        f.write('90\tHerbaceous Wetland\t0.100\n')
-        f.write('95\tMangroves\t0.100\n')
-        f.write('100\tMossLichen\t0.100\n')
-
 
 def move_upstream(point, current_link, distance, G):
     """Walks a fixed distance upstream through a directed graph network."""
@@ -181,6 +74,10 @@ class RathCelonDam:
         self.dem_dir = os.path.dirname(self.dem_path)
         self.output_dir = safe_p(dam_row.get('output_dir'))
         self.land_raster = safe_p(dam_row.get('land_raster'))
+        self.strm_tif_clean = safe_p(dam_row.get('strm_tif_clean'))
+        # Use the shared Manning's n file in the LAND folder
+        land_dir = os.path.dirname(str(self.land_raster))
+        self.manning_n_txt = os.path.join(land_dir, 'Manning_n.txt')
 
         self.flowline_source = dam_row.get('flowline_source', 'NHDPlus')
         self.streamflow_source = dam_row.get('streamflow_source', 'National Water Model')
@@ -214,12 +111,9 @@ class RathCelonDam:
         self.dem_tif = None
         self.arc_input = None
         self.bathy_tif = None
-        self.strm_tif_clean = None
         self.vdt_txt = None
         self.curvefile_csv = None
         self.xs_txt = None
-        self.land_tif = None
-        self.manning_n_txt = None
         self.vdt_gdf = None
         self.curve_data_gdf = None
         self.xs_gdf = None
@@ -232,7 +126,7 @@ class RathCelonDam:
             out_file.write('#ARC_Inputs\n')
             out_file.write(f'DEM_File\t{self.dem_tif}\n')
             out_file.write(f'Stream_File\t{self.strm_tif_clean}\n')
-            out_file.write(f'LU_Raster_SameRes\t{self.land_tif}\n')
+            out_file.write(f'LU_Raster_SameRes\t{self.land_raster}\n')
             out_file.write(f'LU_Manning_n\t{self.manning_n_txt}\n')
             out_file.write(f'Flow_File\t{self.streamflow}\n')
             out_file.write(f'Flow_File_ID\tcomid\n')
@@ -491,26 +385,16 @@ class RathCelonDam:
                 ['STRM', 'ARC_InputFiles', 'Bathymetry', 'VDT', 'XS', 'LAND']}
         for d in dirs.values(): d.mkdir(parents=True, exist_ok=True)
 
-        self.manning_n_txt = str(dirs['LAND'] / 'Manning_n.txt')
-        create_mannings_esa(self.manning_n_txt)
-
         dems = [f for f in os.listdir(self.dem_dir) if f.endswith(('.tif', '.tiff'))]
         for dem in dems:
             print(f"  Processing DEM: {dem}")
             self.dem_tif = str(self.dem_dir / dem)
             self.arc_input = str(dirs['ARC_InputFiles'] / f'ARC_Input_{self.dam_id}.txt')
             self.bathy_tif = str(dirs['Bathymetry'] / f'{self.dam_id}_Bathy.tif')
-            self.strm_tif_clean = str(dirs['STRM'] / f'{self.dam_id}_STRM_Clean.tif')
             self.vdt_txt = str(dirs['VDT'] / f'{self.dam_id}_VDT.txt')
             self.curvefile_csv = str(dirs['VDT'] / f'{self.dam_id}_Curve.csv')
             self.xs_txt = str(dirs['XS'] / f'{self.dam_id}_XS.txt')
-            self.land_tif = str(self.land_raster)
 
-            if not os.path.exists(self.strm_tif_clean):
-                print("    Creating clean stream raster...")
-                raw_strm = self.strm_tif_clean.replace('_Clean.tif', '.tif')
-                create_arc_strm_raster(str(self.flowline), raw_strm, self.dem_tif, self.rivid_field)
-                clean_strm_raster(raw_strm, self.strm_tif_clean)
 
             if not os.path.exists(self.bathy_tif):
                 print("    Running ARC simulation...")
