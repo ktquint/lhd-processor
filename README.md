@@ -15,14 +15,23 @@ The application is structured as a Python package (`lhd_processor`) and is run d
 
 2.  **Download the Project Code:**
     * Download this repository as a ZIP file (or use `git clone`).
-    * Unzip the folder. It already contains an `environment.yaml` file.
+    * Download the [ARC](https://github.com/MikeFHS/automated-rating-curve) repository.
+    * Unzip the folders.
 
 3.  **Create the Conda Environment:**
-    * **Open Terminal/Anaconda Prompt** and navigate to the **root project folder** that contains `environment.yaml`.
-    * Run the following command to create the environment (named `lhd-environment`). This step will take 5-10 minutes.
+    * **Open Terminal/Anaconda Prompt** and navigate to the **LHD Processor** folder (where `environment.yaml` is located).
+    * Run the following commands to create and activate the base environment. This step will take 5-10 minutes.
         ```bash
         conda env create -f environment.yaml
+        conda activate lhd-environment
         ```
+    * **Install ARC:** Navigate to the `automated-rating-curve` folder you downloaded in Step 2.
+        *(Note: The `..` in the command below assumes the two project folders are next to each other. Adjust the path if yours are different.)*
+        ```bash
+        cd ../automated-rating-curve
+        pip install -e .
+        ```
+    * **⚠️ Important:** Do not install `arc` using standard commands like `pip install arc` or by adding it to `environment.yaml`. That will install an unrelated archive utility that conflicts with this project.
 
 ---
 
@@ -76,6 +85,9 @@ Required columns in the `Sites` sheet:
 
 2.  **Run the Processor:**
     * Navigate to the **root project directory** where the `lhd_processor` folder is located.
+        ```bash
+        cd Users/username/Developer/lhd-processor
+        ```
     * Launch the GUI using the module command:
         ```bash
         python -m lhd_processor

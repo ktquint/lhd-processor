@@ -5,7 +5,8 @@ import gc
 from pathlib import Path
 
 # third-party imports
-from arc import Arc  # automated rating curve generator
+from arc import Arc  # automated-rating-curve-
+# generator
 
 try:
     import gdal
@@ -176,7 +177,8 @@ class RathCelonDam:
         self.weir_length = dam_row.get('weir_length', 30)
         self.latitude = dam_row.get('latitude')
         self.longitude = dam_row.get('longitude')
-        self.dem_dir = safe_p(dam_row.get('dem_dir'))
+        self.dem_path = safe_p(dam_row.get('dem_path'))
+        self.dem_dir = os.path.dirname(self.dem_path)
         self.output_dir = safe_p(dam_row.get('output_dir'))
         self.land_raster = safe_p(dam_row.get('land_raster'))
 

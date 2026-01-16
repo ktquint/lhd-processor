@@ -178,7 +178,7 @@ def select_database():
         rath_xlsx_entry.delete(0, tk.END)
         rath_xlsx_entry.insert(0, f)
         
-        # Auto-fill based on parent directory
+        # Autofill based on parent directory
         try:
             project_path = os.path.dirname(f)
             
@@ -384,8 +384,7 @@ def threaded_run_rathcelon():
         count_to_run = len(dams_to_process)
 
         total_cores = os.cpu_count() or 1
-        # worker_count = max(1, int(total_cores / 3))
-        worker_count = 3
+        worker_count = max(1, int(total_cores / 3))
 
         utils.set_status(f"Initializing Dask Workers ({worker_count}) for {count_to_run} dams...")
 
