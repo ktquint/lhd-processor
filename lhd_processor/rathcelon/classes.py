@@ -71,10 +71,10 @@ class RathCelonDam:
         self.latitude = dam_row.get('latitude')
         self.longitude = dam_row.get('longitude')
         self.dem_path = safe_p(dam_row.get('dem_path'))
-        self.dem_dir = os.path.dirname(self.dem_path)
         self.output_dir = safe_p(dam_row.get('output_dir'))
         self.land_raster = safe_p(dam_row.get('land_raster'))
         self.strm_tif_clean = safe_p(dam_row.get('strm_tif_clean'))
+        
         # Use the shared Manning's n file in the LAND folder
         land_dir = os.path.dirname(str(self.land_raster))
         self.manning_n_txt = os.path.join(land_dir, 'Manning_n.txt')
@@ -105,10 +105,9 @@ class RathCelonDam:
         elif self.streamflow_source == 'National Water Model' and self.flowline_source == 'TDX-Hydro':
             self.streamflow = data_dir / 'nwm_to_geoglows_reanalysis.csv'
         else:
-            self.streamflow = data_dir / 'nwm_reanalysis.csv'
+           self.streamflow = data_dir / 'nwm_reanalysis.csv'
 
         # files that will be made with arc or used in arc input
-        self.dem_tif = None
         self.arc_input = None
         self.bathy_tif = None
         self.vdt_txt = None
@@ -124,7 +123,7 @@ class RathCelonDam:
 
         with open(self.arc_input, 'w') as out_file:
             out_file.write('#ARC_Inputs\n')
-            out_file.write(f'DEM_File\t{self.dem_tif}\n')
+            out_file.write(f'DEM_File\t{self.dem_path}\n')
             out_file.write(f'Stream_File\t{self.strm_tif_clean}\n')
             out_file.write(f'LU_Raster_SameRes\t{self.land_raster}\n')
             out_file.write(f'LU_Manning_n\t{self.manning_n_txt}\n')
@@ -161,7 +160,7 @@ class RathCelonDam:
         """Extracts the specific hydraulic cross-sections after ARC run."""
         print(f"    Extracting hydraulic cross-sections for Dam {self.dam_id}...")
 
-        if not os.path.exists(self.vdt_txt) or not os.path.exists(self.curvefile_csv) or not os.path.exists(self.flowline) or not self.dem_tif:
+        if not os.path.exists(self.vdt_txt) or not os.path.exists(self.curvefile_csv) or not os.path.exists(self.flowline) or not self.dem_path:
             print("    ❌ Missing input files for extraction.")
             return
 
@@ -180,10 +179,11 @@ class RathCelonDam:
             return
 
         # Project flowline
+        projected_crs = None
         try:
             projected_crs = flowline_gdf.estimate_utm_crs()
         except:
-            with rasterio.open(self.dem_tif) as ds:
+            with rasterio.open(self.dem_path) as ds:
                 projected_crs = CRS.from_wkt(ds.crs.to_wkt())
         flowline_gdf = flowline_gdf.to_crs(projected_crs)
 
@@ -209,7 +209,7 @@ class RathCelonDam:
         point_labels.append("Upstream")
 
         # Transform target points to DEM
-        with rasterio.open(self.dem_tif) as ds:
+        with rasterio.open(self.dem_path) as ds:
             geoTransform = ds.transform
             minx, dx = geoTransform.c, geoTransform.a
             maxy, dy = geoTransform.f, geoTransform.e
@@ -385,45 +385,45 @@ class RathCelonDam:
                 ['STRM', 'ARC_InputFiles', 'Bathymetry', 'VDT', 'XS', 'LAND']}
         for d in dirs.values(): d.mkdir(parents=True, exist_ok=True)
 
-        dems = [f for f in os.listdir(self.dem_dir) if f.endswith(('.tif', '.tiff'))]
-        for dem in dems:
-            print(f"  Processing DEM: {dem}")
-            self.dem_tif = str(self.dem_dir / dem)
-            self.arc_input = str(dirs['ARC_InputFiles'] / f'ARC_Input_{self.dam_id}.txt')
-            self.bathy_tif = str(dirs['Bathymetry'] / f'{self.dam_id}_Bathy.tif')
-            self.vdt_txt = str(dirs['VDT'] / f'{self.dam_id}_VDT.txt')
-            self.curvefile_csv = str(dirs['VDT'] / f'{self.dam_id}_Curve.csv')
-            self.xs_txt = str(dirs['XS'] / f'{self.dam_id}_XS.txt')
+        if not self.dem_path or not os.path.exists(self.dem_path):
+            print(f"  ❌ DEM not found: {self.dem_path}")
+            return
 
+        print(f"  Processing DEM: {os.path.basename(self.dem_path)}")
+        self.arc_input = str(dirs['ARC_InputFiles'] / f'ARC_Input_{self.dam_id}.txt')
+        self.bathy_tif = str(dirs['Bathymetry'] / f'{self.dam_id}_Bathy.tif')
+        self.vdt_txt = str(dirs['VDT'] / f'{self.dam_id}_VDT.txt')
+        self.curvefile_csv = str(dirs['VDT'] / f'{self.dam_id}_Curve.csv')
+        self.xs_txt = str(dirs['XS'] / f'{self.dam_id}_XS.txt')
 
-            if not os.path.exists(self.bathy_tif):
-                print("    Running ARC simulation...")
-                if self.baseflow_method == 'WSE and LiDAR Date':
-                    Q_baseflow = "known_baseflow"
-                elif self.baseflow_method == "WSE and Median Daily Flow":
-                    Q_baseflow = "qout_median"
-                else:
-                    Q_baseflow = "rp2"
-                self._create_arc_input_txt(Q_baseflow, "rp100")
-                arc_runner = Arc(self.arc_input, quiet=True)
-                try:
-                    arc_runner.set_log_level('info')
-                except AttributeError:
-                    pass
-                arc_runner.run()
-                
-                # Explicitly clean up ARC runner if possible
-                del arc_runner
-                gc.collect()
-
-            print("    Extracting hydraulic cross-sections...")
-            self._find_strm_up_downstream()
+        if not os.path.exists(self.bathy_tif):
+            print("    Running ARC simulation...")
+            if self.baseflow_method == 'WSE and LiDAR Date':
+                Q_baseflow = "known_baseflow"
+            elif self.baseflow_method == "WSE and Median Daily Flow":
+                Q_baseflow = "qout_median"
+            else:
+                Q_baseflow = "rp2"
+            self._create_arc_input_txt(Q_baseflow, "rp100")
+            arc_runner = Arc(self.arc_input, quiet=True)
+            try:
+                arc_runner.set_log_level('info')
+            except AttributeError:
+                pass
+            arc_runner.run()
             
-            if self.vdt_gdf is not None:
-                self.vdt_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_VDT_Database.gpkg'))
-            if self.curve_data_gdf is not None:
-                self.curve_data_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_Curve.gpkg'))
-            if self.xs_gdf is not None:
-                self.xs_gdf.to_file(str(dirs['XS'] / f'{self.dam_id}_Local_XS.gpkg'))
+            # Explicitly clean up ARC runner if possible
+            del arc_runner
+            gc.collect()
+
+        print("    Extracting hydraulic cross-sections...")
+        self._find_strm_up_downstream()
+        
+        if self.vdt_gdf is not None:
+            self.vdt_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_VDT_Database.gpkg'))
+        if self.curve_data_gdf is not None:
+            self.curve_data_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_Curve.gpkg'))
+        if self.xs_gdf is not None:
+            self.xs_gdf.to_file(str(dirs['XS'] / f'{self.dam_id}_Local_XS.gpkg'))
                 
         print(f"Finished Dam: {self.dam_id}")

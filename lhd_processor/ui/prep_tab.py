@@ -64,7 +64,7 @@ def setup_prep_tab(parent_tab):
         
         # Bind focus out event to check existence and show popup if needed
         if must_exist:
-            def check_exists(event):
+            def check_exists(_):
                 path = entry.get()
                 if path:
                     exists = os.path.isfile(path) if is_file else os.path.isdir(path)
@@ -117,7 +117,7 @@ def setup_prep_tab(parent_tab):
     rath_xlsx_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
     
     # Bind focus out event for RathCelon Excel entry
-    def check_rath_xlsx_exists(event):
+    def check_rath_xlsx_exists(_):
         path = rath_xlsx_entry.get()
         if path and not os.path.isfile(path):
             messagebox.showwarning("Path Not Found", f"The specified Excel file does not exist:\n{path}")
@@ -239,7 +239,6 @@ def select_rath_xlsx():
 
 
 # --- Logic and Worker Functions ---
-
 def create_mannings_esa(manning_txt):
     """Writes standard Manning's n look-up table for ESA WorldCover."""
     with open(manning_txt, 'w') as f:
@@ -255,6 +254,7 @@ def create_mannings_esa(manning_txt):
         f.write('90\tHerbaceous Wetland\t0.100\n')
         f.write('95\tMangroves\t0.100\n')
         f.write('100\tMossLichen\t0.100\n')
+
 
 def process_single_dam_rathcelon(dam_dict):
     """Dask worker processing a single dam dictionary from the Excel row."""
@@ -297,7 +297,9 @@ def threaded_prepare_data():
         # Create Manning's n file in the LAND folder
         if land_folder:
             manning_txt = os.path.join(land_folder, 'Manning_n.txt')
-            create_mannings_esa(manning_txt)
+            # only make the file if it doesn't already exist
+            if not os.path.exists(manning_txt):
+                create_mannings_esa(manning_txt)
 
         db = DatabaseManager(xlsx_path)
         site_ids = db.sites['site_id'].tolist()
@@ -415,9 +417,9 @@ def threaded_run_rathcelon():
                 futures = client.map(process_single_dam_rathcelon, dams_to_process)
 
                 processed_so_far = 0
-                for future in as_completed(dask_as_completed(futures)):
+                for future in dask_as_completed(futures):
                     if stop_event.is_set():
-                        client.cancel(futures)
+                        client.cancel(futures)  # type: ignore
                         break
 
                     try:

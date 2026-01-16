@@ -435,11 +435,6 @@ class LowHeadDam:
             return
 
         # Determine flowline path, ID field, and ID value
-        flowline_path = None
-        rivid_field = None
-        identifier = None
-        prefix = None
-
         if self.flowline_source == 'TDX-Hydro':
             flowline_path = self.site_data.get('flowline_path_tdx')
             rivid_field = 'LINKNO'
