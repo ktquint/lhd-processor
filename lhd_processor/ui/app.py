@@ -130,22 +130,29 @@ def main():
         try:
             settings = {
                 # Prep Tab - Paths
-                "database_path": prep_tab.database_entry.get(),
-                "dem_dir": prep_tab.dem_entry.get(),
-                "strm_dir": prep_tab.strm_entry.get(),
-                "land_dir": prep_tab.land_use_entry.get(),
-                "results_dir": prep_tab.results_entry.get(),
-                "rath_xlsx": prep_tab.rath_xlsx_entry.get(),
+                "database_path": prep_tab.database_entry.get() if prep_tab.database_entry else "",
+                "dem_dir": prep_tab.dem_entry.get() if prep_tab.dem_entry else "",
+                "strm_dir": prep_tab.strm_entry.get() if prep_tab.strm_entry else "",
+                "land_dir": prep_tab.land_use_entry.get() if prep_tab.land_use_entry else "",
+                # "results_dir": prep_tab.results_entry.get() if prep_tab.results_entry else "", # Removed from UI
+                
+                # ARC Step 2 Paths
+                "arc_xlsx": prep_tab.arc_xlsx_entry.get() if prep_tab.arc_xlsx_entry else "",
+                "arc_results": prep_tab.arc_results_entry.get() if prep_tab.arc_results_entry else "",
 
                 # Prep Tab - Dropdowns
-                "flowline_source": prep_tab.flowline_var.get(),
-                "dem_res": prep_tab.dd_var.get(),
-                "streamflow_source": prep_tab.streamflow_var.get(),
-                "baseflow_method": prep_tab.baseflow_var.get(),
+                "flowline_source": prep_tab.flowline_var.get() if prep_tab.flowline_var else "",
+                "dem_res": prep_tab.dd_var.get() if prep_tab.dd_var else "",
+                "streamflow_source": prep_tab.streamflow_var.get() if prep_tab.streamflow_var else "",
+                
+                # ARC Step 2 Dropdowns
+                "arc_flowline": prep_tab.arc_flowline_var.get() if prep_tab.arc_flowline_var else "",
+                "arc_streamflow": prep_tab.arc_streamflow_var.get() if prep_tab.arc_streamflow_var else "",
+                "arc_baseflow": prep_tab.arc_baseflow_var.get() if prep_tab.arc_baseflow_var else "",
 
                 # Analysis Tab
-                "analysis_db": analysis_tab.db_entry.get(),
-                "analysis_res": analysis_tab.res_entry.get()
+                "analysis_db": analysis_tab.db_entry.get() if analysis_tab.db_entry else "",
+                "analysis_res": analysis_tab.res_entry.get() if analysis_tab.res_entry else ""
             }
 
             # Save using utils (ensure you added save_settings to utils.py!)
@@ -175,18 +182,22 @@ def main():
                     tk_var.set(settings[key])
 
             # Prep Tab
-            set_entry(prep_tab.project_entry, "project_dir")
             set_entry(prep_tab.database_entry, "database_path")
             set_entry(prep_tab.dem_entry, "dem_dir")
             set_entry(prep_tab.strm_entry, "strm_dir")
             set_entry(prep_tab.land_use_entry, "land_dir")
-            set_entry(prep_tab.results_entry, "results_dir")
-            set_entry(prep_tab.rath_xlsx_entry, "rath_xlsx")
+            # set_entry(prep_tab.results_entry, "results_dir")
+            
+            set_entry(prep_tab.arc_xlsx_entry, "arc_xlsx")
+            set_entry(prep_tab.arc_results_entry, "arc_results")
 
             set_var(prep_tab.flowline_var, "flowline_source")
             set_var(prep_tab.dd_var, "dem_res")
             set_var(prep_tab.streamflow_var, "streamflow_source")
-            set_var(prep_tab.baseflow_var, "baseflow_method")
+            
+            set_var(prep_tab.arc_flowline_var, "arc_flowline")
+            set_var(prep_tab.arc_streamflow_var, "arc_streamflow")
+            set_var(prep_tab.arc_baseflow_var, "arc_baseflow")
 
             # Analysis Tab
             set_entry(analysis_tab.db_entry, "analysis_db")

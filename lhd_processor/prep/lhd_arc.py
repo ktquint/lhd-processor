@@ -55,8 +55,8 @@ def move_upstream(point, current_link, distance, G):
     return curr_pt, link
 
 
-class RathCelonDam:
-    def __init__(self, dam_row: dict):
+class ArcDam:
+    def __init__(self, dam_row: dict, results_dir, flowline_source, streamflow_source, baseflow_method):
         """Initializes dam processing using a row from the Excel database."""
 
         def safe_p(p):
@@ -71,17 +71,25 @@ class RathCelonDam:
         self.latitude = dam_row.get('latitude')
         self.longitude = dam_row.get('longitude')
         self.dem_path = safe_p(dam_row.get('dem_path'))
-        self.output_dir = safe_p(dam_row.get('output_dir'))
-        self.land_raster = safe_p(dam_row.get('land_raster'))
-        self.strm_tif_clean = safe_p(dam_row.get('strm_tif_clean'))
         
-        # Use the shared Manning's n file in the LAND folder
-        land_dir = os.path.dirname(str(self.land_raster))
-        self.manning_n_txt = os.path.join(land_dir, 'Manning_n.txt')
+        # Ensure output_dir is a Path object
+        self.output_dir = Path(results_dir) if results_dir else None
+        
+        self.land_raster = safe_p(dam_row.get('land_raster'))
+        if flowline_source == 'TDX-Hydro':
+            self.strm_tif_clean = safe_p(dam_row.get('flowline_raster_tdx'))
+        else:
+            self.strm_tif_clean = safe_p(dam_row.get('flowline_raster_nhd'))
 
-        self.flowline_source = dam_row.get('flowline_source', 'NHDPlus')
-        self.streamflow_source = dam_row.get('streamflow_source', 'National Water Model')
-        self.baseflow_method = dam_row.get('baseflow_method', 'WSE and LiDAR Date')
+        # Use the shared Manning's n file in the LAND folder
+        if self.land_raster:
+            self.manning_n_txt = self.land_raster.parent.parent / 'Manning_n.txt'
+        else:
+            self.manning_n_txt = None
+
+        self.flowline_source = flowline_source
+        self.streamflow_source = streamflow_source
+        self.baseflow_method = baseflow_method
 
         # ARC specific defaults
         self.create_reach_average_curve_file = 'False'
@@ -105,7 +113,7 @@ class RathCelonDam:
         elif self.streamflow_source == 'National Water Model' and self.flowline_source == 'TDX-Hydro':
             self.streamflow = data_dir / 'nwm_to_geoglows_reanalysis.csv'
         else:
-           self.streamflow = data_dir / 'nwm_reanalysis.csv'
+            self.streamflow = data_dir / 'nwm_reanalysis.csv'
 
         # files that will be made with arc or used in arc input
         self.arc_input = None
@@ -160,14 +168,27 @@ class RathCelonDam:
         """Extracts the specific hydraulic cross-sections after ARC run."""
         print(f"    Extracting hydraulic cross-sections for Dam {self.dam_id}...")
 
-        if not os.path.exists(self.vdt_txt) or not os.path.exists(self.curvefile_csv) or not os.path.exists(self.flowline) or not self.dem_path:
-            print("    ❌ Missing input files for extraction.")
+        # Ensure files exist (using Path.exists())
+        if not self.vdt_txt or not self.vdt_txt.exists():
+            print(f"    ❌ VDT file missing: {self.vdt_txt}")
+            return
+        if not self.curvefile_csv or not self.curvefile_csv.exists():
+            print(f"    ❌ Curve file missing: {self.curvefile_csv}")
+            return
+        if not self.flowline or not self.flowline.exists():
+            print(f"    ❌ Flowline file missing: {self.flowline}")
+            return
+        if not self.dem_path or not self.dem_path.exists():
+            print(f"    ❌ DEM file missing: {self.dem_path}")
             return
 
         # Load Curve (Load VDT later to save memory)
         try:
             curve_df = pd.read_csv(self.curvefile_csv)
             curve_df.columns = [c.strip() for c in curve_df.columns]
+            if curve_df.empty:
+                print("    ❌ Curve file is empty.")
+                return
         except Exception as e:
             print(f"    ❌ Error loading Curve: {e}")
             return
@@ -201,8 +222,11 @@ class RathCelonDam:
         start_dist = merged_geom.project(dam_point)
 
         # Generate target points
-        target_points = [merged_geom.interpolate(min(start_dist + i * self.weir_length, merged_geom.length)) for i in range(1, 5)]
+        target_points = [merged_geom.interpolate(min(start_dist + i * self.weir_length, merged_geom.length)) for i in
+                         range(1, 5)]
         target_points.append(merged_geom.interpolate(max(start_dist - self.weir_length, 0)))
+        
+        print(f"    Generated {len(target_points)} target points along flowline.")
 
         # Define labels
         point_labels = [f"Downstream{i}" for i in range(1, 5)]
@@ -214,7 +238,7 @@ class RathCelonDam:
             minx, dx = geoTransform.c, geoTransform.a
             maxy, dy = geoTransform.f, geoTransform.e
             dem_crs = CRS.from_wkt(ds.crs.to_wkt())
-        
+
         transformer = Transformer.from_crs(projected_crs, dem_crs, always_xy=True)
         target_points_dem = [Point(transformer.transform(pt.x, pt.y)) for pt in target_points]
 
@@ -230,11 +254,11 @@ class RathCelonDam:
 
         # Match points to Curve (Spatial match to find correct Row/Col in Curve)
         final_indices = []
-        
+
         # Optimization: Use numpy arrays and squared distance
         c_rows = curve_df['Row'].values
         c_cols = curve_df['Col'].values
-        
+
         for idx, row in tp_gdf.iterrows():
             r = row['Row']
             c = row['Col']
@@ -243,42 +267,45 @@ class RathCelonDam:
             best_pos = np.argmin(d2)
             best_idx = curve_df.index[best_pos]
             final_indices.append(best_idx)
+            
+        print(f"    Matched {len(final_indices)} points to Curve file.")
 
         extracted_curve = curve_df.loc[final_indices].copy()
         extracted_curve['Relative_Loc'] = tp_gdf['Relative_Loc'].values
-        
+
         # Free memory of full curve_df
         del curve_df
         del c_rows
         del c_cols
         gc.collect()
-        
+
         # Determine ID field (COMID or XS_ID)
         id_col = 'COMID' if 'COMID' in extracted_curve.columns else 'XS_ID'
-        
+
         # Load VDT NOW
         try:
             vdt_df = pd.read_csv(self.vdt_txt, sep=',')
             vdt_df.columns = [c.strip() for c in vdt_df.columns]
         except Exception as e:
-             print(f"    ❌ Error loading VDT: {e}")
-             return
+            print(f"    ❌ Error loading VDT: {e}")
+            return
 
         # Filter VDT
         target_ids = extracted_curve[id_col].unique()
         self.vdt_gdf = vdt_df[vdt_df[id_col].isin(target_ids)].copy()
-        self.vdt_gdf = self.vdt_gdf.merge(extracted_curve[[id_col, 'Relative_Loc']].drop_duplicates(), on=id_col, how='left')
-        
+        self.vdt_gdf = self.vdt_gdf.merge(extracted_curve[[id_col, 'Relative_Loc']].drop_duplicates(), on=id_col,
+                                          how='left')
+
         # Free memory of full vdt_df
         del vdt_df
         gc.collect()
-        
+
         # Create Curve GeoDataFrame
         x_base = float(minx) + 0.5 * dx
         y_base = float(maxy) - 0.5 * abs(dy)
         extracted_curve['X'] = x_base + extracted_curve['Col'] * dx
         extracted_curve['Y'] = y_base - extracted_curve['Row'] * abs(dy)
-        
+
         transformer_to_wgs = Transformer.from_crs(dem_crs, "EPSG:4326", always_xy=True)
         extracted_curve[['Lon', 'Lat']] = extracted_curve.apply(
             lambda r: pd.Series(transformer_to_wgs.transform(r['X'], r['Y'])), axis=1)
@@ -292,19 +319,19 @@ class RathCelonDam:
 
         # XS Extraction
         xs_lines = []
-        if os.path.exists(self.xs_txt):
+        if self.xs_txt.exists():
             try:
                 xs_df = pd.read_csv(self.xs_txt, sep='\t')
                 xs_df.columns = [c.strip() for c in xs_df.columns]
-                
+
                 xs_id_col = 'COMID' if 'COMID' in xs_df.columns else 'XS_ID'
-                
+
                 # Merge XS with extracted_curve on ID, Row, Col
-                merged_xs = xs_df.merge(extracted_curve[[id_col, 'Row', 'Col', 'Relative_Loc']], 
-                                        left_on=[xs_id_col, 'Row', 'Col'], 
-                                        right_on=[id_col, 'Row', 'Col'], 
+                merged_xs = xs_df.merge(extracted_curve[[id_col, 'Row', 'Col', 'Relative_Loc']],
+                                        left_on=[xs_id_col, 'Row', 'Col'],
+                                        right_on=[id_col, 'Row', 'Col'],
                                         how='inner')
-                
+
                 # Free memory of full xs_df
                 del xs_df
                 gc.collect()
@@ -371,7 +398,7 @@ class RathCelonDam:
         else:
             print("    ⚠️ No XS lines extracted.")
             self.xs_gdf = gpd.GeoDataFrame(columns=['geometry', 'COMID'], crs="EPSG:4326")
-        
+
         # Final cleanup for this dam
         if self.vdt_gdf is not None: del self.vdt_gdf
         if self.curve_data_gdf is not None: del self.curve_data_gdf
@@ -381,22 +408,33 @@ class RathCelonDam:
     def process_dam(self):
         """Execution loop for processing a single dam."""
         print(f"Processing Dam: {self.dam_id}")
+        
+        if not self.output_dir:
+             print("  ❌ Output directory not specified.")
+             return
+
+        # Ensure output_dir is a Path
+        if not isinstance(self.output_dir, Path):
+            self.output_dir = Path(self.output_dir)
+
         dirs = {sd: self.output_dir / str(self.dam_id) / sd for sd in
-                ['STRM', 'ARC_InputFiles', 'Bathymetry', 'VDT', 'XS', 'LAND']}
+                ['ARC_InputFiles', 'Bathymetry', 'VDT', 'XS']}
         for d in dirs.values(): d.mkdir(parents=True, exist_ok=True)
 
-        if not self.dem_path or not os.path.exists(self.dem_path):
+        if not self.dem_path or not self.dem_path.exists():
             print(f"  ❌ DEM not found: {self.dem_path}")
             return
 
-        print(f"  Processing DEM: {os.path.basename(self.dem_path)}")
-        self.arc_input = str(dirs['ARC_InputFiles'] / f'ARC_Input_{self.dam_id}.txt')
-        self.bathy_tif = str(dirs['Bathymetry'] / f'{self.dam_id}_Bathy.tif')
-        self.vdt_txt = str(dirs['VDT'] / f'{self.dam_id}_VDT.txt')
-        self.curvefile_csv = str(dirs['VDT'] / f'{self.dam_id}_Curve.csv')
-        self.xs_txt = str(dirs['XS'] / f'{self.dam_id}_XS.txt')
+        print(f"  Processing DEM: {self.dem_path.name}")
+        
+        # Keep these as Path objects
+        self.arc_input = dirs['ARC_InputFiles'] / f'ARC_Input_{self.dam_id}.txt'
+        self.bathy_tif = dirs['Bathymetry'] / f'{self.dam_id}_Bathy.tif'
+        self.vdt_txt = dirs['VDT'] / f'{self.dam_id}_VDT.txt'
+        self.curvefile_csv = dirs['VDT'] / f'{self.dam_id}_Curve.csv'
+        self.xs_txt = dirs['XS'] / f'{self.dam_id}_XS.txt'
 
-        if not os.path.exists(self.bathy_tif):
+        if not self.bathy_tif.exists():
             print("    Running ARC simulation...")
             if self.baseflow_method == 'WSE and LiDAR Date':
                 Q_baseflow = "known_baseflow"
@@ -405,25 +443,27 @@ class RathCelonDam:
             else:
                 Q_baseflow = "rp2"
             self._create_arc_input_txt(Q_baseflow, "rp100")
-            arc_runner = Arc(self.arc_input, quiet=True)
+            
+            # Convert to string for Arc if it requires string input
+            arc_runner = Arc(str(self.arc_input), quiet=True)
             try:
                 arc_runner.set_log_level('info')
             except AttributeError:
                 pass
             arc_runner.run()
-            
+
             # Explicitly clean up ARC runner if possible
             del arc_runner
             gc.collect()
 
         print("    Extracting hydraulic cross-sections...")
         self._find_strm_up_downstream()
-        
+
         if self.vdt_gdf is not None:
-            self.vdt_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_VDT_Database.gpkg'))
+            self.vdt_gdf.to_file(dirs['VDT'] / f'{self.dam_id}_Local_VDT_Database.gpkg')
         if self.curve_data_gdf is not None:
-            self.curve_data_gdf.to_file(str(dirs['VDT'] / f'{self.dam_id}_Local_Curve.gpkg'))
+            self.curve_data_gdf.to_file(dirs['VDT'] / f'{self.dam_id}_Local_Curve.gpkg')
         if self.xs_gdf is not None:
-            self.xs_gdf.to_file(str(dirs['XS'] / f'{self.dam_id}_Local_XS.gpkg'))
-                
+            self.xs_gdf.to_file(dirs['XS'] / f'{self.dam_id}_Local_XS.gpkg')
+
         print(f"Finished Dam: {self.dam_id}")

@@ -13,9 +13,10 @@ from pynhd import NLDI
 import geopandas as gpd
 from pyproj import Transformer
 from shapely.ops import transform
-from shapely.geometry import Point, box, Polygon
+from shapely.geometry import Point, box
 from datetime import datetime, timedelta
 import time
+from typing import Union, Tuple, List
 
 try:
     import gdal
@@ -27,94 +28,115 @@ except ImportError:
 # 1. FLOWLINE FUNCTIONS (NHDPlus & TDX-Hydro)
 # =================================================================
 
-def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km=2):
+def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km: Union[float, Tuple[float, float], List[float]] = (1, 2), site_id=None):
     """
     Uses HyRiver NLDI to fetch NHDPlus flowlines, merges VAAs (hydroseq, dnhydroseq),
     and standardizes ID columns.
     """
-    nldi = NLDI()
     try:
-        comid_df = nldi.comid_byloc((lon, lat))
-    except Exception as e:
-        print(f"NLDI Error: {e}")
-        return None, None
-
-    if comid_df.empty:
-        print(f"No NHD COMID found for location: {lat}, {lon}")
-        return None, None
-
-    comid_val = comid_df.comid.values[0]
-    
-    # OPTIMIZATION: Check if file already exists
-    os.makedirs(flowline_dir, exist_ok=True)
-    output_path = os.path.join(flowline_dir, f"nhd_flowline_{comid_val}.gpkg")
-    
-    if os.path.exists(output_path):
+        nldi = NLDI()
         try:
-            # print(f"Found existing flowline file: {output_path}") # User asked to limit prints
-            gdf = gpd.read_file(output_path)
-            return output_path, gdf
+            comid_df = nldi.comid_byloc((lon, lat))
         except Exception as e:
-            print(f"Error reading existing file, redownloading: {e}")
+            print(f"NLDI Error: {e}")
+            return None, None
 
-    all_reaches = []
-    nav_modes = ["upstreamMain", "downstreamMain"]
+        if comid_df is None or comid_df.empty:
+            print(f"No NHD COMID found for location: {lat}, {lon}")
+            return None, None
 
-    for mode in nav_modes:
-        try:
-            reach = nldi.navigate_byid(
-                fsource="comid",
-                fid=str(comid_val),
-                navigation=mode,
-                source="flowlines",
-                distance=distance_km
-            )
-            if not reach.empty:
-                all_reaches.append(reach)
-        except Exception as e:
-            print(f"NLDI Navigation Error ({mode}): {e}")
+        comid_val = comid_df.comid.values[0]
+        
+        # Create site-specific subdirectory if site_id is provided
+        if site_id:
+            site_flowline_dir = os.path.join(flowline_dir, str(site_id))
+        else:
+            site_flowline_dir = flowline_dir
+            
+        os.makedirs(site_flowline_dir, exist_ok=True)
+        output_path = os.path.join(site_flowline_dir, f"nhd_flowline_{comid_val}.gpkg")
+        
+        if os.path.exists(output_path):
+            try:
+                # print(f"Found existing flowline file: {output_path}") # User asked to limit prints
+                gdf = gpd.read_file(output_path)
+                return output_path, gdf
+            except Exception as e:
+                print(f"Error reading existing file, redownloading: {e}")
 
-    if not all_reaches:
+        all_reaches = []
+        nav_modes = ["upstreamMain", "downstreamMain"]
+
+        for mode in nav_modes:
+            try:
+                # If distance_km is a tuple/list, use index 0 for upstream, 1 for downstream
+                dist = distance_km
+                if isinstance(distance_km, (tuple, list)) and len(distance_km) == 2:
+                    if mode == "upstreamMain":
+                        dist = distance_km[0]
+                    else:
+                        dist = distance_km[1]
+
+                reach = nldi.navigate_byid(
+                    fsource="comid",
+                    fid=str(comid_val),
+                    navigation=mode,
+                    source="flowlines",
+                    distance=dist
+                )
+                if reach is not None and not reach.empty:
+                    all_reaches.append(reach)
+            except Exception as e:
+                print(f"NLDI Navigation Error ({mode}): {e}")
+
+        if not all_reaches:
+            return None, None
+
+        combined_df = pd.concat(all_reaches)
+        combined_df.columns = combined_df.columns.str.lower()
+
+        # Standardization: Ensure 'nhdplusid' exists
+        id_map = ['nhdplus_comid', 'comid', 'nhdplusid']
+        for col in id_map:
+            if col in combined_df.columns:
+                combined_df = combined_df.rename(columns={col: 'nhdplusid'})
+                break
+
+        # --- FETCH AND MERGE VAAs ---
+        # Convert ID to numeric for the join
+        if 'nhdplusid' in combined_df.columns:
+            combined_df['nhdplusid'] = pd.to_numeric(combined_df['nhdplusid'])
+
+            # Fetch the VAA table (hydroseq and dnhydroseq are in the 'vaa' service)
+            # Note: nhdplus_vaa() fetches the national parquet file
+            try:
+                vaa_df = nhd.nhdplus_vaa()
+                if vaa_df is not None and not vaa_df.empty:
+                    vaa_subset = vaa_df[['comid', 'hydroseq', 'dnhydroseq']].rename(columns={'comid': 'nhdplusid'})
+
+                    # Merge VAAs into the flowline dataframe
+                    combined_df = combined_df.merge(vaa_subset, on='nhdplusid', how='left')
+            except Exception as e:
+                print(f"Warning: Could not fetch/merge VAAs: {e}")
+        # ----------------------------
+
+        combined_gdf = gpd.GeoDataFrame(combined_df, crs=all_reaches[0].crs)
+        if 'nhdplusid' in combined_gdf.columns:
+            combined_gdf = combined_gdf.drop_duplicates(subset='nhdplusid')
+
+        # output_path is already defined above
+        if not os.path.exists(output_path):
+            combined_gdf.to_file(output_path, driver="GPKG", layer="NHDFlowline")
+            print(f"Flowlines saved to: {output_path}")
+
+        return output_path, combined_gdf
+
+    except Exception as e:
+        print(f"Unexpected error in download_nhd_flowline: {e}")
         return None, None
 
-    combined_df = pd.concat(all_reaches)
-    combined_df.columns = combined_df.columns.str.lower()
 
-    # Standardization: Ensure 'nhdplusid' exists
-    id_map = ['nhdplus_comid', 'comid', 'nhdplusid']
-    for col in id_map:
-        if col in combined_df.columns:
-            combined_df = combined_df.rename(columns={col: 'nhdplusid'})
-            break
-
-    # --- FETCH AND MERGE VAAs ---
-    # Convert ID to numeric for the join
-    combined_df['nhdplusid'] = pd.to_numeric(combined_df['nhdplusid'])
-
-    # Fetch the VAA table (hydroseq and dnhydroseq are in the 'vaa' service)
-    # Note: nhdplus_vaa() fetches the national parquet file
-    try:
-        vaa_df = nhd.nhdplus_vaa()
-        vaa_subset = vaa_df[['comid', 'hydroseq', 'dnhydroseq']].rename(columns={'comid': 'nhdplusid'})
-
-        # Merge VAAs into the flowline dataframe
-        combined_df = combined_df.merge(vaa_subset, on='nhdplusid', how='left')
-    except Exception as e:
-        print(f"Warning: Could not fetch/merge VAAs: {e}")
-    # ----------------------------
-
-    combined_gdf = gpd.GeoDataFrame(combined_df, crs=all_reaches[0].crs)
-    combined_gdf = combined_gdf.drop_duplicates(subset='nhdplusid')
-
-    # output_path is already defined above
-    if not os.path.exists(output_path):
-        combined_gdf.to_file(output_path, driver="GPKG", layer="NHDFlowline")
-        print(f"Flowlines saved to: {output_path}")
-
-    return output_path, combined_gdf
-
-
-def navigate_tdx_network(dam_point: Point, gpkg_path: str, distance_km: float = 2.0, site_id=None):
+def navigate_tdx_network(dam_point: Point, gpkg_path: str, distance_km: Union[float, Tuple[float, float], List[float]] = (1, 2), site_id=None):
     """
         Navigates GEOGLOWS (TDX-Hydro) network using LengthGeodesicMeters.
         At junctions, it follows the main stem (highest strmOrder).
@@ -182,12 +204,20 @@ def navigate_tdx_network(dam_point: Point, gpkg_path: str, distance_km: float = 
         print(f"Error finding nearest stream: {e}")
         return None, -1
 
-    threshold_m = distance_km * 1000.0
+    # Handle tuple distance (upstream, downstream)
+    if isinstance(distance_km, (tuple, list)) and len(distance_km) == 2:
+        threshold_m_us = distance_km[0] * 1000.0
+        threshold_m_ds = distance_km[1] * 1000.0
+    else:
+        threshold_m_us = distance_km * 1000.0
+        threshold_m_ds = distance_km * 1000.0
 
     def trace_network(current_id, direction='downstream'):
         found_reaches = []
         visited = {current_id}
         queue = [(current_id, 0.0)]
+
+        threshold_m = threshold_m_ds if direction == 'downstream' else threshold_m_us
 
         while queue:
             cid, accumulated_m = queue.pop(0)
@@ -236,7 +266,7 @@ def navigate_tdx_network(dam_point: Point, gpkg_path: str, distance_km: float = 
     return gpd.GeoDataFrame(combined, crs=streams.crs), start_id
 
 
-def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, vpu_map_path: str, site_id=None):
+def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, vpu_map_path: str, distance_km: Union[float, Tuple[float, float], List[float]] = (1, 2), site_id=None):
     """
         Downloads GEOGLOWS/TDX-Hydro flowlines based on VPU boundaries.
     """
@@ -258,8 +288,11 @@ def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, 
     # 2. extract the vpu to download
     vpu_col = [c for c in vpu_polygon.columns if c.lower() in ['vpu', 'vpucode']][0]
     vpu_code = str(vpu_polygon.iloc[0][vpu_col])
-    # 3. download the streams_vpu.gpkg
+    
+    # 3. download the streams_vpu.gpkg (Keep this in the main flowline_dir to share across sites)
+    os.makedirs(flowline_dir, exist_ok=True)
     flowline_vpu = os.path.join(flowline_dir, f"streams_{vpu_code}.gpkg")
+    
     if not os.path.exists(flowline_vpu):
         try:
             fs = s3fs.S3FileSystem(anon=True)
@@ -270,12 +303,20 @@ def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, 
             print(f"Error downloading VPU {vpu_code}: {e}")
             return None, None
 
-    flowline_gdf, linkno = navigate_tdx_network(dam_point, flowline_vpu, site_id=site_id)
+    # Pass the distance_km argument
+    flowline_gdf, linkno = navigate_tdx_network(dam_point, flowline_vpu, distance_km=distance_km, site_id=site_id)
     
     if flowline_gdf is None or flowline_gdf.empty:
         return None, None
 
-    output_path = os.path.join(flowline_dir, f"tdx_flowline_{linkno}.gpkg")
+    # Save the clipped flowline in a site-specific subdirectory
+    if site_id:
+        site_flowline_dir = os.path.join(flowline_dir, str(site_id))
+    else:
+        site_flowline_dir = flowline_dir
+        
+    os.makedirs(site_flowline_dir, exist_ok=True)
+    output_path = os.path.join(site_flowline_dir, f"tdx_flowline_{linkno}.gpkg")
 
     if not os.path.exists(output_path):
         try:
@@ -480,7 +521,11 @@ def download_land_raster(lhd_id: int, dem_path: str, land_dir: str):
     """
     Downloads ESA WorldCover and aligns it exactly to the grid of the downloaded DEM.
     """
-    final_path = os.path.join(land_dir, f"{lhd_id}_LAND_Raster.tif")
+    # Create site-specific subdirectory for the final raster
+    site_land_dir = os.path.join(land_dir, str(lhd_id))
+    os.makedirs(site_land_dir, exist_ok=True)
+    
+    final_path = os.path.join(site_land_dir, f"{lhd_id}_LAND_Raster.tif")
     if os.path.exists(final_path): return final_path
 
     # Get target DEM specs
@@ -491,13 +536,22 @@ def download_land_raster(lhd_id: int, dem_path: str, land_dir: str):
         # Create polygon for ESA intersection
         geom = box(*src.bounds)
 
+    # Keep raw ESA tiles in the main LAND folder to share across sites
     raw_esa_dir = os.path.join(land_dir, 'raw_esa')
     raw_lc_tif = _download_esa_land_cover(geom, raw_esa_dir, dem_crs)
 
     if raw_lc_tif:
-        # Align using GDAL Translate
-        options = gdal.TranslateOptions(projWin=bounds, width=ncols, height=nrows, creationOptions=['COMPRESS=LZW'])
-        gdal.Translate(final_path, raw_lc_tif, options=options)
+        # Align using GDAL Warp to ensure exact grid match
+        options = gdal.WarpOptions(
+            format='GTiff',
+            outputBounds=bounds,
+            width=ncols,
+            height=nrows,
+            dstSRS=dem_crs.to_wkt(),
+            resampleAlg=gdal.GRA_NearestNeighbour,
+            creationOptions=['COMPRESS=LZW']
+        )
+        gdal.Warp(final_path, raw_lc_tif, options=options)
         return final_path
     return None
 

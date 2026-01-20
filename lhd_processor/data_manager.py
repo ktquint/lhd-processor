@@ -17,14 +17,13 @@ class DatabaseManager:
         # --- Schemas ---
         self.sites_schema = [
             'site_id', 'name', 'latitude', 'longitude', 'weir_length', 'comments',
-            'dem_path', 'dem_resolution_m', 'lidar_project',
+            'dem_path', 'dem_resolution_m', 'dem_source_info',
             'flowline_source', 'streamflow_source',
             'flowline_path_nhd', 'flowline_path_tdx',
+            'flowline_raster_nhd', 'flowline_raster_tdx',
             'reach_id', 'linkno',  # Added these to schema
-            'baseflow_nwm', 'baseflow_geo',
-            'P_known', 'output_dir',
-            'baseflow_method', 'lidar_date', 'dem_source_info',
-            'land_raster'
+            'P_known', 'lidar_date', 'lidar_project',
+            'land_raster',
         ]
 
         self.incidents_schema = ['site_id', 'date', 'flow_nwm', 'flow_geo']

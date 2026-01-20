@@ -130,6 +130,10 @@ class LowHeadDam:
         self.res_meters = self.site_data.get('dem_resolution_m')
         self.lidar_year = self.site_data.get('lidar_year')
         self.land_cover_path = self.site_data.get('land_raster')
+        
+        # Ensure flowline rasters are loaded from DB if available
+        self.flowline_raster_nhd = self.site_data.get('flowline_raster_nhd')
+        self.flowline_raster_tdx = self.site_data.get('flowline_raster_tdx')
 
         self.flowline_gdf: Optional[gpd.GeoDataFrame] = None
         self.incidents_df = self.db.get_site_incidents(self.site_id)
@@ -245,7 +249,8 @@ class LowHeadDam:
 
     def est_dem_baseflow(self, baseflow_method: str):
         # Check if baseflow is already recorded
-        target_col = 'baseflow_nwm' if self.streamflow_source == 'National Water Model' else 'baseflow_geo'
+        is_nwm = self.streamflow_source == 'National Water Model'
+        target_col = 'baseflow_nwm' if is_nwm else 'baseflow_geo'
         existing_val = self.site_data.get(target_col)
 
         if pd.notna(existing_val) and float(existing_val) != 0.0:
@@ -264,18 +269,14 @@ class LowHeadDam:
                 elif self.lidar_year:
                     found_date = f"{self.lidar_year}-06-15"
 
+        flow_val = 0.0
         if found_date:
             self.site_data['lidar_date'] = found_date
-            if self.streamflow_source == 'National Water Model':
-                self.site_data['baseflow_nwm'] = self.get_streamflow(found_date, "National Water Model")
-            elif self.streamflow_source == 'GEOGLOWS':
-                self.site_data['baseflow_geo'] = self.get_streamflow(found_date, "GEOGLOWS")
+            flow_val = self.get_streamflow(found_date, self.streamflow_source)
         else:
-            if self.streamflow_source == 'National Water Model':
-                self.site_data['baseflow_nwm'] = self.get_median_streamflow("National Water Model")
-            elif self.streamflow_source == 'GEOGLOWS':
-                self.site_data['baseflow_geo'] = self.get_median_streamflow("GEOGLOWS")
+            flow_val = self.get_median_streamflow(self.streamflow_source)
 
+        self.site_data[target_col] = flow_val
         self.site_data['baseflow_method'] = baseflow_method
 
     def est_fatal_flows(self, source: Optional[str] = None):
@@ -370,7 +371,9 @@ class LowHeadDam:
                     path_nhd = None
 
             if not path_nhd:
-                path_nhd, gdf = download_nhd_flowline(self.latitude, self.longitude, flowline_dir)
+                # Pass tuple (1, 2) for 1km upstream and 2km downstream
+                # Pass site_id to create subdirectory
+                path_nhd, gdf = download_nhd_flowline(self.latitude, self.longitude, flowline_dir, distance_km=(1, 2), site_id=self.site_id)
 
             if path_nhd:
                 self.site_data['flowline_path_nhd'] = path_nhd
@@ -400,7 +403,9 @@ class LowHeadDam:
                     path_tdx = None
 
             if not path_tdx:
-                path_tdx, gdf = download_tdx_flowline(self.latitude, self.longitude, flowline_dir, vpu_gpkg, site_id=self.site_id)
+                # Pass tuple (1, 2) for 1km upstream and 2km downstream
+                # Pass site_id to create subdirectory
+                path_tdx, gdf = download_tdx_flowline(self.latitude, self.longitude, flowline_dir, vpu_gpkg, distance_km=(1, 2), site_id=self.site_id)
 
             if path_tdx:
                 self.site_data['flowline_path_tdx'] = path_tdx
@@ -434,40 +439,61 @@ class LowHeadDam:
             print(f"Dam {self.site_id}: Skipping stream raster generation (Missing DEM).")
             return
 
-        # Determine flowline path, ID field, and ID value
-        if self.flowline_source == 'TDX-Hydro':
-            flowline_path = self.site_data.get('flowline_path_tdx')
-            rivid_field = 'LINKNO'
-            identifier = self.geoglows_id
-            prefix = 'geo'
-        else:
-            flowline_path = self.site_data.get('flowline_path_nhd')
-            rivid_field = 'nhdplusid'
-            identifier = self.nwm_id
-            prefix = 'nhd'
-
-        if not flowline_path or not os.path.exists(flowline_path):
-             print(f"Dam {self.site_id}: Skipping stream raster generation (Missing Flowline).")
-             return
+        # Define configurations to process
+        configs = []
         
-        if not identifier:
-             print(f"Dam {self.site_id}: Skipping stream raster generation (Missing ID).")
+        # Check NHD
+        path_nhd = self.site_data.get('flowline_path_nhd')
+        if path_nhd and os.path.exists(path_nhd) and self.nwm_id:
+            configs.append({
+                'source': 'NHDPlus',
+                'path': path_nhd,
+                'field': 'nhdplusid',
+                'id': self.nwm_id,
+                'prefix': 'nhd',
+                'target_attr': 'flowline_raster_nhd'
+            })
+            
+        # Check TDX
+        path_tdx = self.site_data.get('flowline_path_tdx')
+        if path_tdx and os.path.exists(path_tdx) and self.geoglows_id:
+            configs.append({
+                'source': 'TDX-Hydro',
+                'path': path_tdx,
+                'field': 'LINKNO',
+                'id': self.geoglows_id,
+                'prefix': 'tdx',
+                'target_attr': 'flowline_raster_tdx'
+            })
+
+        if not configs:
+             print(f"Dam {self.site_id}: Skipping stream raster generation (No valid flowlines/IDs found).")
              return
 
-        # Output directory is the same as flowline directory
-        strm_dir = os.path.dirname(flowline_path)
-        
-        # Naming convention: prefix_{id}_clean.tif
-        clean_strm_tif = os.path.join(strm_dir, f'{prefix}_{identifier}_clean.tif')
-        raw_strm_tif = clean_strm_tif.replace('_clean.tif', '.tif')
+        for cfg in configs:
+            strm_dir = os.path.dirname(cfg['path'])
+            clean_strm_tif = os.path.join(strm_dir, f"{cfg['prefix']}_{int(cfg['id'])}_clean.tif")
+            raw_strm_tif = clean_strm_tif.replace('_clean.tif', '.tif')
+            
+            print(f"Dam {self.site_id}: Generating {cfg['source']} stream raster at {clean_strm_tif}...")
+            try:
+                create_arc_strm_raster(cfg['path'], raw_strm_tif, self.dem_path, cfg['field'])
+                clean_strm_raster(raw_strm_tif, clean_strm_tif)
+                
+                # Update instance and site_data
+                setattr(self, cfg['target_attr'], clean_strm_tif)
+                self.site_data[cfg['target_attr']] = clean_strm_tif
+                
+                # Delete the raw raster after cleaning
+                if os.path.exists(raw_strm_tif):
+                    try:
+                        os.remove(raw_strm_tif)
+                        print(f"Dam {self.site_id}: Deleted raw stream raster {raw_strm_tif}")
+                    except Exception as e:
+                        print(f"Dam {self.site_id}: Warning: Could not delete raw stream raster: {e}")
 
-        print(f"Dam {self.site_id}: Generating stream raster at {clean_strm_tif}...")
-        try:
-            create_arc_strm_raster(flowline_path, raw_strm_tif, self.dem_path, rivid_field)
-            clean_strm_raster(raw_strm_tif, clean_strm_tif)
-            self.site_data['strm_tif_clean'] = clean_strm_tif
-        except Exception as e:
-            print(f"Dam {self.site_id}: Error generating stream raster: {e}")
+            except Exception as e:
+                print(f"Dam {self.site_id}: Error generating {cfg['source']} stream raster: {e}")
 
 
     def save_changes(self):
@@ -480,6 +506,12 @@ class LowHeadDam:
         
         # Ensure land raster path is saved
         self.site_data['land_raster'] = self.land_cover_path
+        
+        # Ensure stream raster paths are saved
+        if self.flowline_raster_nhd:
+            self.site_data['flowline_raster_nhd'] = self.flowline_raster_nhd
+        if self.flowline_raster_tdx:
+            self.site_data['flowline_raster_tdx'] = self.flowline_raster_tdx
 
         self.db.update_site_data(self.site_id, self.site_data)
 

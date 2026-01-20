@@ -6,32 +6,23 @@ import xarray as xr
 import geoglows as geo
 from dask.diagnostics import ProgressBar
 
-def create_reanalysis_file(comid_list, source, package_root, comid_date_map=None, db_manager=None):
+
+def create_reanalysis_file(comid_list, source, package_root, comid_date_map=None):
     """
     Generates a reanalysis CSV with flow statistics for the given COMIDs.
-    Optionally updates the database with the found baseflow values.
     """
     if not comid_list:
         print("No COMIDs provided for reanalysis.")
         return
-    
+
     # Dynamic filename based on source
     filename = "nwm_reanalysis.csv" if source == 'National Water Model' else "geoglows_reanalysis.csv"
     reanalysis_path = os.path.join(package_root, 'data', filename)
-    
+
     # If we are updating with new dates, we might want to overwrite or merge
     # For now, let's assume if comid_date_map is provided, we are doing a second pass
     if os.path.exists(reanalysis_path) and not comid_date_map:
         print(f"Reanalysis file already exists at {reanalysis_path}. Skipping generation.")
-        
-        # If db_manager is provided, try to update DB from existing file
-        if db_manager:
-            print("Reading existing reanalysis file to update database...")
-            try:
-                existing_df = pd.read_csv(reanalysis_path)
-                _update_db_from_stats(existing_df.to_dict('records'), db_manager, source)
-            except Exception as e:
-                print(f"Failed to read existing reanalysis: {e}")
         return
 
     stats_list = []
@@ -46,13 +37,13 @@ def create_reanalysis_file(comid_list, source, package_root, comid_date_map=None
         try:
             # Ensure comid_list contains integers
             comid_list = [int(x) for x in comid_list]
-            
+
             try:
                 ds = xr.open_zarr(zarr_path, consolidated=True)
             except (KeyError, FileNotFoundError):
                 print("Warning: Consolidated metadata not found. Retrying with consolidated=False...")
                 ds = xr.open_zarr(zarr_path, consolidated=False)
-            
+
             # Filter IDs that actually exist in the dataset
             available_ids = ds['feature_id'].values
             valid_ids = [fid for fid in comid_list if fid in available_ids]
@@ -62,7 +53,7 @@ def create_reanalysis_file(comid_list, source, package_root, comid_date_map=None
             if missing_ids:
                 print(f"Warning: {len(missing_ids)} requested COMIDs were not found in the Zarr index.")
                 print(f"Sample missing: {list(missing_ids)[:5]}")
-            
+
             if not valid_ids:
                 print("No valid IDs found in Zarr dataset.")
                 print(f"Requested (first 5): {comid_list[:5]}")
@@ -72,7 +63,7 @@ def create_reanalysis_file(comid_list, source, package_root, comid_date_map=None
             ds_subset = ds.sel(feature_id=valid_ids)
             # Convert to DataFrame
             df = ds_subset.to_dataframe().reset_index()
-            
+
         except Exception as e:
             print(f"Error reading Zarr: {e}")
             return
@@ -116,13 +107,13 @@ def create_reanalysis_file(comid_list, source, package_root, comid_date_map=None
             if comid_date_map:
                 target_date = comid_date_map.get(int(comid))
                 if target_date:
-                     day_match = site_df[site_df['time'].dt.strftime('%Y-%m-%d') == target_date]
-                     if not day_match.empty:
-                         known_baseflow = day_match['streamflow'].iloc[0]
+                    day_match = site_df[site_df['time'].dt.strftime('%Y-%m-%d') == target_date]
+                    if not day_match.empty:
+                        known_baseflow = day_match['streamflow'].iloc[0]
 
             # Annual Maxima for Return Periods
             annual_max = site_df.groupby('year')['streamflow'].max()
-            
+
             if len(annual_max) < 2:
                 continue
 
@@ -143,7 +134,7 @@ def create_reanalysis_file(comid_list, source, package_root, comid_date_map=None
 
             for rp in target_rps:
                 if rp > x_interp[-1]:
-                    val = y_interp[-1] # Cap at max observed
+                    val = y_interp[-1]  # Cap at max observed
                 elif rp < x_interp[0]:
                     val = y_interp[0]
                 else:
@@ -234,50 +225,17 @@ def create_reanalysis_file(comid_list, source, package_root, comid_date_map=None
     if stats_list:
         out_df = pd.DataFrame(stats_list)
         # Reorder columns
-        cols = ['comid', 'known_baseflow', 'qout_median', 'qout_max', 'rp2', 'rp5', 'rp10', 'rp25', 'rp50', 'rp100', 'qout_max_premium', 'rp100_premium']
+        cols = ['comid', 'known_baseflow', 'qout_median', 'qout_max', 'rp2', 'rp5', 'rp10', 'rp25', 'rp50', 'rp100',
+                'qout_max_premium', 'rp100_premium']
         # Add any missing columns just in case
         for c in cols:
             if c not in out_df.columns: out_df[c] = 0.0
-        
+
         out_df = out_df[cols]
         out_df.to_csv(reanalysis_path, index=False)
         print(f"Reanalysis file saved to {reanalysis_path}")
-
-        if db_manager:
-            _update_db_from_stats(stats_list, db_manager, source)
     else:
         print("No stats calculated.")
-
-
-def _update_db_from_stats(stats_list, db_manager, source):
-    """Helper to update database from stats list"""
-    print(f"Updating database with baseflow values from {source}...")
-    col_name = 'baseflow_nwm' if source == 'National Water Model' else 'baseflow_geo'
-    id_col = 'reach_id' if source == 'National Water Model' else 'linkno'
-    
-    # Ensure we have the sites loaded
-    sites_df = db_manager.sites
-    
-    count = 0
-    for row in stats_list:
-        try:
-            comid = int(row['comid'])
-            baseflow = float(row['known_baseflow'])
-            
-            # Filter where id_col is not null/nan
-            valid_sites = sites_df[pd.notna(sites_df[id_col])].copy()
-            # Convert to int for comparison (handling floats like 123.0)
-            valid_sites['temp_id'] = valid_sites[id_col].astype(float).astype(int)
-            matches = valid_sites[valid_sites['temp_id'] == comid]
-            
-            for _, site in matches.iterrows():
-                db_manager.update_site_data(site['site_id'], {col_name: baseflow})
-                count += 1
-        except Exception as e:
-            print(f"Error updating site for COMID {row.get('comid')}: {e}")
-    
-    db_manager.save()
-    print(f"Database updated: {count} sites modified.")
 
 
 def condense_zarr(comid_list, output_zarr):
