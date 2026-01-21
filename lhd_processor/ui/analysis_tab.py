@@ -480,7 +480,14 @@ def threaded_display(mode, params):
                             figs.append((xs.create_combined_fig(), f"Dam {d_id} RC {xs.index}"))
 
                     if params["chk_map"]:
-                        figs.append((dam.plot_map(), f"Dam {d_id} Map"))
+                        # Use a non-interactive backend for map plotting to avoid thread issues
+                        import matplotlib
+                        original_backend = matplotlib.get_backend()
+                        matplotlib.use('Agg') # Force non-interactive backend
+                        try:
+                            figs.append((dam.plot_map(), f"Dam {d_id} Map"))
+                        finally:
+                            matplotlib.use(original_backend) # Restore original backend
 
                     if params["chk_wsp"]:
                         figs.append((dam.plot_water_surface(), f"Dam {d_id} WSE"))

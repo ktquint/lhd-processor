@@ -778,8 +778,8 @@ class Dam:
             cross_section.create_combined_fig()
 
     def plot_map(self):
-        strm_gpkg = os.path.join(self.results_dir, str(self.id), "STRM", f"{self.id}_StrmShp.gpkg")
-        strm_gdf = gpd.read_file(strm_gpkg).to_crs('EPSG:3857')
+        # strm_gpkg = os.path.join(self.results_dir, str(self.id), "STRM", f"{self.id}_StrmShp.gpkg")
+        # strm_gdf = gpd.read_file(strm_gpkg).to_crs('EPSG:3857')
         xs_gdf = gpd.read_file(self.xs_gpkg).to_crs('EPSG:3857')
         
         # Reverse to match Dam order
@@ -793,9 +793,14 @@ class Dam:
         ax.set_ylim(miny - buffer, maxy + buffer)
         ctx.add_basemap(ax, crs='EPSG:3857', source="Esri.WorldImagery", zorder=0)
 
-        gdf_upstream = xs_gdf.iloc[[0]]
-        gdf_downstream = xs_gdf.iloc[1:]
-        strm_gdf.plot(ax=ax, color='green', markersize=100, edgecolor='black', zorder=2, label="Flowline")
+        if 'Relative_Loc' in xs_gdf.columns:
+            gdf_upstream = xs_gdf[xs_gdf['Relative_Loc'] == 'Upstream']
+            gdf_downstream = xs_gdf[xs_gdf['Relative_Loc'] != 'Upstream']
+        else:
+            gdf_upstream = xs_gdf.iloc[[0]]
+            gdf_downstream = xs_gdf.iloc[1:]
+
+        # strm_gdf.plot(ax=ax, color='green', markersize=100, edgecolor='black', zorder=2, label="Flowline")
         gdf_upstream.plot(ax=ax, color='red', markersize=100, edgecolor='black', zorder=2, label="Upstream")
         gdf_downstream.plot(ax=ax, color='dodgerblue', markersize=100, edgecolor='black', zorder=2, label="Downstream")
 
@@ -825,25 +830,30 @@ class Dam:
         return fig
 
     def plot_water_surface(self, save=True):
-        cf_csv = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_CurveFile.csv")
-        xs_txt = os.path.join(self.results_dir, str(self.id), "XS", f"{self.id}_XS_Out.txt")
+        cf_csv = os.path.join(self.results_dir, str(self.id), "VDT", f"{self.id}_Curve.csv")
+        xs_txt = os.path.join(self.results_dir, str(self.id), "XS", f"{self.id}_XS.txt")
         database_df = merge_databases(cf_csv, xs_txt)
         fig = Figure(figsize=(12, 10))
         ax = fig.add_subplot(111)
         ax.plot(database_df.index, database_df['DEM_Elev'], color='dodgerblue', label='DEM Elevation')
         ax.plot(database_df.index, database_df['BaseElev'], color='black', label='Bed Elevation')
 
-        upstream_xs = self.dam_gdf.iloc[0]
-        upstream_idx = \
-            database_df[(database_df['Row'] == upstream_xs['Row']) & (database_df['Col'] == upstream_xs['Col'])].index[
-                0]
-        ax.axvline(x=upstream_idx, color='red', linestyle='--', label=f'Upstream Cross-Section')
+        ds_label_added = False
+        for i, xs in enumerate(self.cross_sections):
+            if i >= len(self.dam_gdf):
+                continue
 
-        for i in range(1, len(self.dam_gdf)):
-            ds_xs = self.dam_gdf.iloc[i]
-            ds_idx = database_df[(database_df["Row"] == ds_xs['Row']) & (database_df["Col"] == ds_xs['Col'])].index[0]
-            label = 'Downstream Cross-Sections' if i == 1 else ""
-            ax.axvline(x=ds_idx, color='cyan', linestyle='--', label=label)
+            row_data = self.dam_gdf.iloc[i]
+            matches = database_df[(database_df['Row'] == row_data['Row']) & (database_df['Col'] == row_data['Col'])]
+
+            if not matches.empty:
+                idx = matches.index[0]
+                if xs.location == 'Upstream':
+                    ax.axvline(x=idx, color='red', linestyle='--', label='Upstream Cross-Section')
+                else:
+                    label = 'Downstream Cross-Sections' if not ds_label_added else ""
+                    ax.axvline(x=idx, color='cyan', linestyle='--', label=label)
+                    ds_label_added = True
 
         ax.legend()
         ax.set_xlabel("Distance Downstream (m)")

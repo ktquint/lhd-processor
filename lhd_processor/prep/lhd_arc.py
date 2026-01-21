@@ -323,6 +323,8 @@ class ArcDam:
             try:
                 xs_df = pd.read_csv(self.xs_txt, sep='\t')
                 xs_df.columns = [c.strip() for c in xs_df.columns]
+                
+                print(f"    Found {len(xs_df)} rows in XS file.")
 
                 xs_id_col = 'COMID' if 'COMID' in xs_df.columns else 'XS_ID'
 
@@ -331,6 +333,8 @@ class ArcDam:
                                         left_on=[xs_id_col, 'Row', 'Col'],
                                         right_on=[id_col, 'Row', 'Col'],
                                         how='inner')
+                                        
+                print(f"    Matched {len(merged_xs)} rows in XS file to target points.")
 
                 # Free memory of full xs_df
                 del xs_df
@@ -357,6 +361,7 @@ class ArcDam:
                         ord_dist = ensure_list(row['Ordinate_Dist'])
 
                         if xs1 is None or ord_dist is None or len(xs1) < 2:
+                            print(f"    ⚠️ Skipping row {comid}: Invalid XS data.")
                             continue
 
                         x1 = x_base + row['c1'] * dx
@@ -392,18 +397,16 @@ class ArcDam:
 
             except Exception as e:
                 print(f"    ⚠️ Error processing XS file: {e}")
+        else:
+             print(f"    ⚠️ XS file not found: {self.xs_txt}")
 
         if xs_lines:
             self.xs_gdf = gpd.GeoDataFrame(xs_lines, crs=projected_crs).to_crs("EPSG:4326")
+            print(f"    Successfully extracted {len(self.xs_gdf)} cross-sections.")
         else:
             print("    ⚠️ No XS lines extracted.")
             self.xs_gdf = gpd.GeoDataFrame(columns=['geometry', 'COMID'], crs="EPSG:4326")
 
-        # Final cleanup for this dam
-        if self.vdt_gdf is not None: del self.vdt_gdf
-        if self.curve_data_gdf is not None: del self.curve_data_gdf
-        if self.xs_gdf is not None: del self.xs_gdf
-        gc.collect()
 
     def process_dam(self):
         """Execution loop for processing a single dam."""
@@ -465,5 +468,11 @@ class ArcDam:
             self.curve_data_gdf.to_file(dirs['VDT'] / f'{self.dam_id}_Local_Curve.gpkg')
         if self.xs_gdf is not None:
             self.xs_gdf.to_file(dirs['XS'] / f'{self.dam_id}_Local_XS.gpkg')
+            
+        # Final cleanup for this dam (Moved here)
+        if self.vdt_gdf is not None: del self.vdt_gdf
+        if self.curve_data_gdf is not None: del self.curve_data_gdf
+        if self.xs_gdf is not None: del self.xs_gdf
+        gc.collect()
 
         print(f"Finished Dam: {self.dam_id}")

@@ -16,6 +16,7 @@ from shapely.ops import transform
 from shapely.geometry import Point, box
 from datetime import datetime, timedelta
 import time
+import traceback
 from typing import Union, Tuple, List
 
 try:
@@ -34,7 +35,22 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
     and standardizes ID columns.
     """
     try:
-        nldi = NLDI()
+        if distance_km is None:
+            distance_km = (1, 2)
+
+        # Retry NLDI initialization as it fetches metadata from the web and can fail
+        nldi = None
+        for attempt in range(3):
+            try:
+                nldi = NLDI()
+                break
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(2)
+                else:
+                    print(f"Failed to initialize NLDI after retries: {e}")
+                    return None, None
+
         try:
             comid_df = nldi.comid_byloc((lon, lat))
         except Exception as e:
@@ -45,7 +61,14 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
             print(f"No NHD COMID found for location: {lat}, {lon}")
             return None, None
 
+        if 'comid' not in comid_df.columns:
+             print(f"No 'comid' column in NLDI result. Columns: {comid_df.columns}")
+             return None, None
+
         comid_val = comid_df.comid.values[0]
+        if pd.isna(comid_val):
+             print("Found None/NaN for COMID")
+             return None, None
         
         # Create site-specific subdirectory if site_id is provided
         if site_id:
@@ -69,13 +92,15 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
 
         for mode in nav_modes:
             try:
-                # If distance_km is a tuple/list, use index 0 for upstream, 1 for downstream
+                # Handle distance logic safely
                 dist = distance_km
-                if isinstance(distance_km, (tuple, list)) and len(distance_km) == 2:
-                    if mode == "upstreamMain":
+                if isinstance(distance_km, (tuple, list)):
+                    if len(distance_km) == 2:
+                        dist = distance_km[0] if mode == "upstreamMain" else distance_km[1]
+                    elif len(distance_km) > 0:
                         dist = distance_km[0]
                     else:
-                        dist = distance_km[1]
+                        dist = 1 # Default fallback
 
                 reach = nldi.navigate_byid(
                     fsource="comid",
@@ -133,6 +158,7 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
 
     except Exception as e:
         print(f"Unexpected error in download_nhd_flowline: {e}")
+        traceback.print_exc()
         return None, None
 
 
@@ -205,9 +231,16 @@ def navigate_tdx_network(dam_point: Point, gpkg_path: str, distance_km: Union[fl
         return None, -1
 
     # Handle tuple distance (upstream, downstream)
-    if isinstance(distance_km, (tuple, list)) and len(distance_km) == 2:
-        threshold_m_us = distance_km[0] * 1000.0
-        threshold_m_ds = distance_km[1] * 1000.0
+    if isinstance(distance_km, (tuple, list)):
+        if len(distance_km) == 2:
+            threshold_m_us = distance_km[0] * 1000.0
+            threshold_m_ds = distance_km[1] * 1000.0
+        elif len(distance_km) > 0:
+            threshold_m_us = distance_km[0] * 1000.0
+            threshold_m_ds = distance_km[0] * 1000.0
+        else:
+            threshold_m_us = 1000.0
+            threshold_m_ds = 2000.0
     else:
         threshold_m_us = distance_km * 1000.0
         threshold_m_ds = distance_km * 1000.0

@@ -18,7 +18,6 @@ class DatabaseManager:
         self.sites_schema = [
             'site_id', 'name', 'latitude', 'longitude', 'weir_length', 'comments',
             'dem_path', 'dem_resolution_m', 'dem_source_info',
-            'flowline_source', 'streamflow_source',
             'flowline_path_nhd', 'flowline_path_tdx',
             'flowline_raster_nhd', 'flowline_raster_tdx',
             'reach_id', 'linkno',  # Added these to schema
