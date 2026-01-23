@@ -23,6 +23,7 @@ class DatabaseManager:
             'reach_id', 'linkno',  # Added these to schema
             'P_known', 'lidar_date', 'lidar_project',
             'land_raster',
+            'flowline_source', 'streamflow_source' # Added these to schema
         ]
 
         self.incidents_schema = ['site_id', 'date', 'flow_nwm', 'flow_geo']

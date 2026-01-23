@@ -333,7 +333,7 @@ def threaded_prepare_data():
         # Stage 3: DEMs
         utils.set_status("Stage 3/4: Fetching DEMs...")
         with ThreadPoolExecutor(max_workers=2) as executor:
-            for sid in site_ids: executor.submit(worker_assign_dem, sid, db, dem_folder, dem_resolution)
+            for sid in site_ids: executor.submit(worker_assign_dem, sid, db, dem_folder, dem_resolution, flowline_source)
 
         # Stage 4: Hydraulics & Land Use
         utils.set_status("Stage 4/4: Finalizing hydraulics...")
@@ -459,8 +459,9 @@ def worker_assign_flowlines(sid, db, flowline_source, streamflow_source, strm_fo
     return ids
 
 
-def worker_assign_dem(sid, db, dem_folder, dem_resolution):
+def worker_assign_dem(sid, db, dem_folder, dem_resolution, flowline_source):
     dam = PrepDam(sid, db)
+    dam.set_flowline_source(flowline_source)
     dam.assign_dem(dem_folder, dem_resolution)
     dam.save_changes()
 

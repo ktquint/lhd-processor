@@ -135,6 +135,9 @@ class LowHeadDam:
         self.flowline_raster_nhd = self.site_data.get('flowline_raster_nhd')
         self.flowline_raster_tdx = self.site_data.get('flowline_raster_tdx')
 
+        self.flowline_path_nhd = self.site_data.get('flowline_path_nhd')
+        self.flowline_path_tdx = self.site_data.get('flowline_path_tdx')
+
         self.flowline_gdf: Optional[gpd.GeoDataFrame] = None
         self.incidents_df = self.db.get_site_incidents(self.site_id)
 
@@ -314,8 +317,10 @@ class LowHeadDam:
             path = src
         
         # 2. Standard Check
-        elif src == 'NHDPlus':
+        elif src == 'NHDPlus' or src == 'Both':
             path = self.site_data.get('flowline_path_nhd')
+            if not path and src == 'Both':
+                path = self.site_data.get('flowline_path_tdx')
         elif src in ['TDX-Hydro', 'GEOGLOWS']:
             path = self.site_data.get('flowline_path_tdx')
             
@@ -359,7 +364,7 @@ class LowHeadDam:
     def assign_flowlines(self, flowline_dir: str, vpu_gpkg: str) -> List[int]:
         found_ids = []
 
-        if self.flowline_source == 'NHDPlus' or self.streamflow_source == 'National Water Model':
+        if self.flowline_source in ['NHDPlus', 'Both'] or self.streamflow_source in ['National Water Model', 'Both']:
             path_nhd = self.site_data.get('flowline_path_nhd')
             gdf = None
 
@@ -376,8 +381,9 @@ class LowHeadDam:
                 path_nhd, gdf = download_nhd_flowline(self.latitude, self.longitude, flowline_dir, distance_km=(1, 2), site_id=self.site_id)
 
             if path_nhd:
+                self.flowline_path_nhd = path_nhd
                 self.site_data['flowline_path_nhd'] = path_nhd
-                if self.flowline_source == 'NHDPlus':
+                if self.flowline_source in ['NHDPlus', 'Both']:
                     self.flowline_gdf = gdf
 
                 filename = os.path.basename(path_nhd)
@@ -391,7 +397,7 @@ class LowHeadDam:
                 if gdf is not None and 'nhdplusid' in gdf.columns:
                     found_ids.extend(gdf['nhdplusid'].astype(int).tolist())
 
-        if self.flowline_source == 'TDX-Hydro' or self.streamflow_source == 'GEOGLOWS':
+        if self.flowline_source in ['TDX-Hydro', 'Both'] or self.streamflow_source in ['GEOGLOWS', 'Both']:
             path_tdx = self.site_data.get('flowline_path_tdx')
             gdf = None
 
@@ -408,8 +414,9 @@ class LowHeadDam:
                 path_tdx, gdf = download_tdx_flowline(self.latitude, self.longitude, flowline_dir, vpu_gpkg, distance_km=(1, 2), site_id=self.site_id)
 
             if path_tdx:
+                self.flowline_path_tdx = path_tdx
                 self.site_data['flowline_path_tdx'] = path_tdx
-                if self.flowline_source in ['TDX-Hydro', 'GEOGLOWS']:
+                if self.flowline_source in ['TDX-Hydro', 'GEOGLOWS', 'Both']:
                     self.flowline_gdf = gdf
 
                 filename = os.path.basename(path_tdx)
@@ -512,6 +519,11 @@ class LowHeadDam:
             self.site_data['flowline_raster_nhd'] = self.flowline_raster_nhd
         if self.flowline_raster_tdx:
             self.site_data['flowline_raster_tdx'] = self.flowline_raster_tdx
+
+        if self.flowline_path_nhd:
+            self.site_data['flowline_path_nhd'] = self.flowline_path_nhd
+        if self.flowline_path_tdx:
+            self.site_data['flowline_path_tdx'] = self.flowline_path_tdx
 
         self.db.update_site_data(self.site_id, self.site_data)
 
