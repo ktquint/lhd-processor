@@ -42,3 +42,4 @@ dependencies:
     - hydrosignatures
     - pygeohydro
     - nest-asyncio
+    - py7zr
