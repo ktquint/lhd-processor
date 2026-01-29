@@ -303,33 +303,6 @@ class CrossSection:
                     delta_wse = wse_upstream - self.wse
                     H, P = solve_weir_geom(Q_b, self.L, y_t, delta_wse)
 
-                    # --- ADDED: Calculate and Plot Sequent Depth (y2) ---
-                    y_2_calc = solve_y2_adv(Q_b, self.L, H, P, self.y_1_shifted, self.y_2_shifted, self.dist)
-                    y_2_elev = self.bed_elevation + y_2_calc
-
-                    # Find lateral extents for y2 line (Center -> Out)
-                    y2_x_left = []
-                    for i, elev in enumerate(self.y_1_raw):
-                        if y_2_elev >= elev > -1e5:
-                            y2_x_left.append(self.x_1_coords[i])
-                        else:
-                            break
-
-                    y2_x_right = []
-                    for i, elev in enumerate(self.y_2_raw):
-                        if elev <= y_2_elev > -1e5:
-                            y2_x_right.append(self.x_2_coords[i])
-                        else:
-                            break
-
-                    y2_lateral = y2_x_left[::-1] + y2_x_right
-                    y2_elevs = [y_2_elev] * len(y2_lateral)
-
-                    if y2_lateral:
-                        ax.plot(y2_lateral, y2_elevs, color='green', linestyle='--',
-                                label=f'Sequent Depth Elevation: {round(y_2_elev, 1)} m')
-                    # ----------------------------------------------------
-
                     crest_elev_val = wse_upstream - H
                     upstream_elevs = [wse_upstream] * len(upstream_lateral)
                     crest_elevs = [crest_elev_val] * len(upstream_lateral)
@@ -419,14 +392,14 @@ class CrossSection:
             Y_Flips.append(Y_Flip)
             Y_Conjugates.append(Y_Conj2)
 
-        ax.plot(Qs * 35.315, np.array(Y_Flips) * 3.281, label="Flip Depth", color='gray', linestyle='--')
-        ax.plot(Qs * 35.315, Y_Ts * 3.281, label="Tailwater Depth", color='dodgerblue', linestyle='-')
-        ax.plot(Qs * 35.315, np.array(Y_Conjugates) * 3.281, label="Sequent Depth", color='gray', linestyle='-')
+        ax.plot(Qs, np.array(Y_Flips), label="Flip Depth", color='gray', linestyle='--')
+        ax.plot(Qs, Y_Ts, label="Tailwater Depth", color='dodgerblue', linestyle='-')
+        ax.plot(Qs, np.array(Y_Conjugates), label="Sequent Depth", color='gray', linestyle='-')
         ax.grid(True)
         ax.set_xlim(left=0)
         ax.set_ylim(bottom=0)
-        ax.set_xlabel('Discharge (ft$^{3}$/s)')
-        ax.set_ylabel('Depth (ft)')
+        ax.set_xlabel('Discharge (m$^{3}$/s)')
+        ax.set_ylabel('Depth (m)')
         ax.set_title(f'Submerged Hydraulic Jumps at Low-Head Dam No. {self.id}')
 
 
@@ -436,7 +409,7 @@ class CrossSection:
             return
         np_fatal_qs = np.array(self.fatal_qs)
         fatal_d = np.array([self.get_tailwater_depth(q) for q in np_fatal_qs])
-        ax.scatter(np_fatal_qs * 35.315, fatal_d * 3.281, label="Recorded Fatality", marker='o', facecolors='none',
+        ax.scatter(np_fatal_qs, fatal_d, label="Recorded Fatality", marker='o', facecolors='none',
                    edgecolors='black')
 
     def create_combined_fig(self, save=True):
@@ -471,18 +444,15 @@ class CrossSection:
             return
 
         flow_cms = flow_data.dropna().values
-        flow_cfs = flow_cms * 35.315
-        sorted_flow = np.sort(flow_cfs)[::-1]
+        sorted_flow = np.sort(flow_cms)[::-1]
         n = len(sorted_flow)
         exceedance = 100 * np.arange(1, n + 1) / (n + 1)
 
-        fdc_df = pd.DataFrame({'Exceedance (%)': exceedance, 'Flow (cfs)': sorted_flow})
-        ax.plot(fdc_df['Exceedance (%)'], fdc_df['Flow (cfs)'], label='FDC', color='dodgerblue')
+        fdc_df = pd.DataFrame({'Exceedance (%)': exceedance, 'Flow (cms)': sorted_flow})
+        ax.plot(fdc_df['Exceedance (%)'], fdc_df['Flow (cms)'], label='FDC', color='dodgerblue')
 
         try:
             Q_conj, Q_flip = self.get_dangerous_flow_range()
-            Q_conj *= 35.315
-            Q_flip *= 35.315
             
             # Use parent dam's absolute min/max to clamp or validate
             # (Optional: You could clamp Q_conj/Q_flip here if they are outside observed range)
@@ -495,7 +465,7 @@ class CrossSection:
         except Exception as e:
             print(f"Could not calc dangerous intersections: {e}")
 
-        ax.set_ylabel('Discharge (cfs)')
+        ax.set_ylabel('Discharge (m$^{3}$/s)')
         ax.set_yscale("log")
         ax.set_xlabel('Exceedance Probability (%)')
         ax.set_title(f'Flow-Duration Curve for Low-Head Dam No. {self.id}')
