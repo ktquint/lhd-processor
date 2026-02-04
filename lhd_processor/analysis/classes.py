@@ -398,9 +398,10 @@ class CrossSection:
         ax.grid(True)
         ax.set_xlim(left=0)
         ax.set_ylim(bottom=0)
-        ax.set_xlabel('Discharge (m$^{3}$/s)')
-        ax.set_ylabel('Depth (m)')
-        ax.set_title(f'Submerged Hydraulic Jumps at Low-Head Dam No. {self.id}')
+        ax.set_xlabel('Discharge (m$^{3}$/s)', fontsize=12)
+        ax.set_ylabel('Depth (m)', fontsize=12)
+        ax.set_title(f'Submerged Hydraulic Jumps at Low-Head Dam No. {self.id}', fontsize=14)
+        ax.tick_params(axis='both', which='major', labelsize=12)
 
 
 
@@ -413,11 +414,11 @@ class CrossSection:
                    edgecolors='black')
 
     def create_combined_fig(self, save=True):
-        fig = Figure(figsize=(12, 8))
+        fig = Figure(figsize=(13, 6.5))
         ax = fig.add_subplot(111)
         self.plot_flip_sequent(ax)
         self.plot_fatal_flows(ax)
-        ax.legend(loc='upper left')
+        ax.legend(loc='upper left', prop={'size': 12})
         if save:
             fname = os.path.join(self.fig_dir, f"RC_{self.location_label}_LHD_{self.id}.png")
             fig.savefig(fname, dpi=300, bbox_inches='tight')
@@ -465,15 +466,16 @@ class CrossSection:
         except Exception as e:
             print(f"Could not calc dangerous intersections: {e}")
 
-        ax.set_ylabel('Discharge (m$^{3}$/s)')
+        ax.set_ylabel('Discharge (m$^{3}$/s)', fontsize=12)
         ax.set_yscale("log")
-        ax.set_xlabel('Exceedance Probability (%)')
-        ax.set_title(f'Flow-Duration Curve for Low-Head Dam No. {self.id}')
+        ax.set_xlabel('Exceedance Probability (%)', fontsize=12)
+        ax.set_title(f'Flow-Duration Curve for Low-Head Dam No. {self.id}', fontsize=14)
         ax.grid(True, which="both", linestyle='--')
-        ax.legend()
+        ax.legend(prop={'size': 12})
+        ax.tick_params(axis='both', which='major', labelsize=12)
 
     def create_combined_fdc(self):
-        fig = Figure(figsize=(10, 6))
+        fig = Figure(figsize=(13, 6.5))
         ax = fig.add_subplot(111)
         self.plot_fdc(ax)
         fig.savefig(os.path.join(self.fig_dir, f"FDC_{self.location_label}_LHD_{self.id}.png"), dpi=300, bbox_inches='tight')
@@ -733,10 +735,12 @@ class Dam:
     def plot_rating_curves(self):
         for cross_section in self.cross_sections[1:]:
             cross_section.create_rating_curve()
-        plt.xlabel('Flow (m$^{3}$/s)')
-        plt.ylabel('Depth (m)')
-        plt.title(f'Rating Curves for LHD No. {self.id}')
-        plt.legend(title="Rating Curve Equations", loc='best', fontsize='small')
+        plt.xlabel('Flow (m$^{3}$/s)', fontsize=12)
+        plt.ylabel('Depth (m)', fontsize=12)
+        plt.title(f'Rating Curves for LHD No. {self.id}', fontsize=14)
+        plt.legend(title="Rating Curve Equations", loc='best', fontsize=12, title_fontsize=12)
+        plt.xticks(fontsize=12)
+        plt.yticks(fontsize=12)
         plt.savefig(os.path.join(self.fig_dir, f"Rating Curves for LHD No. {self.id}.png"))
 
     def plot_cross_sections(self):

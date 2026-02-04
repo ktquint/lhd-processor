@@ -28,7 +28,7 @@ def hydraulic_jump_type(y_2, y_t, y_flip):
 
 
 def get_prob_from_Q(Q, df):
-    return df.loc[(df['Flow (cfs)'] - Q).abs().idxmin(), 'Exceedance (%)']
+    return df.loc[(df['Flow (cms)'] - Q).abs().idxmin(), 'Exceedance (%)']
 
 def fuzzy_merge(left, right, tol=2):
     """Perform fuzzy merge based on Row and Col coordinates within tolerance."""
