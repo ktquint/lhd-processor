@@ -368,7 +368,7 @@ def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, 
 
 def download_dem(lhd_id, flowline_gdf, dem_dir, res_meters=1):
     """
-    Fetches 3DEP DEM using flowline extent with 10m fallback and metadata tracking.
+        Fetches 3DEP DEM using flowline extent with 10m fallback and metadata tracking.
     """
     try:
         if flowline_gdf is None or flowline_gdf.empty:
