@@ -1,6 +1,7 @@
 import gc
 import os
 import threading
+import requests
 import pandas as pd
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -306,7 +307,23 @@ def threaded_prepare_data():
 
         ui_dir = os.path.dirname(os.path.realpath(__file__))
         package_root = os.path.dirname(ui_dir)
+        hydroshare_resource_id = '71277c621bb54e1d85094f779a1f9bd4'
         tdx_vpu_map = os.path.join(package_root, 'data', 'vpu-boundaries.gpkg')
+
+        if not os.path.exists(tdx_vpu_map):
+            utils.set_status("Downloading VPU boundaries from HydroShare...")
+            try:
+                os.makedirs(os.path.dirname(tdx_vpu_map), exist_ok=True)
+                url = f"https://www.hydroshare.org/resource/{hydroshare_resource_id}/data/contents/vpu-boundaries.gpkg"
+                response = requests.get(url, stream=True)
+                response.raise_for_status()
+                with open(tdx_vpu_map, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                utils.set_status("VPU boundaries downloaded.")
+            except Exception as e:
+                utils.set_status(f"Error downloading VPU map: {e}")
+                print(f"Failed to download VPU boundaries: {e}")
 
         # Stage 1: Flowlines
         utils.set_status("Stage 1/4: Assigning flowlines...")
@@ -315,7 +332,7 @@ def threaded_prepare_data():
             futures = {
                 executor.submit(worker_assign_flowlines, sid, db, flowline_source, streamflow_source, strm_folder,
                                 tdx_vpu_map): sid for sid in site_ids}
-            for future in as_completed(futures):
+            for future in as_completed(futures): 
                 ids = future.result()
                 if ids: all_comids.update(ids)
 
