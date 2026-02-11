@@ -333,8 +333,11 @@ def threaded_prepare_data():
                 executor.submit(worker_assign_flowlines, sid, db, flowline_source, streamflow_source, strm_folder,
                                 tdx_vpu_map): sid for sid in site_ids}
             for future in as_completed(futures): 
-                ids = future.result()
-                if ids: all_comids.update(ids)
+                try:
+                    ids = future.result()
+                    if ids: all_comids.update(ids)
+                except Exception as e:
+                    print(f"Error in Flowline worker: {e}")
 
         # Stage 2: Streamflow (Zarr Condensation & Reanalysis)
         if all_comids:
@@ -350,13 +353,23 @@ def threaded_prepare_data():
         # Stage 3: DEMs
         utils.set_status("Stage 3/4: Fetching DEMs...")
         with ThreadPoolExecutor(max_workers=2) as executor:
-            for sid in site_ids: executor.submit(worker_assign_dem, sid, db, dem_folder, dem_resolution, flowline_source)
+            futures = [executor.submit(worker_assign_dem, sid, db, dem_folder, dem_resolution, flowline_source) for sid in site_ids]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"Error in DEM worker: {e}")
 
         # Stage 4: Hydraulics & Land Use
         utils.set_status("Stage 4/4: Finalizing hydraulics...")
         with ThreadPoolExecutor(max_workers=4) as executor:
-            for sid in site_ids: executor.submit(worker_assign_hydraulics, sid, db, results_folder, land_folder,
-                                                 "WSE and LiDAR Date", streamflow_source, flowline_source)
+            futures = [executor.submit(worker_assign_hydraulics, sid, db, results_folder, land_folder,
+                                                 "WSE and LiDAR Date", streamflow_source, flowline_source) for sid in site_ids]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"Error in Hydraulics worker: {e}")
 
         # Save and point to Excel for Step 2
         utils.set_status("Saving database...")

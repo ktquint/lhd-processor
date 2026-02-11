@@ -1,7 +1,6 @@
 import os
 import s3fs
 import laspy
-import py3dep
 import requests
 import tempfile
 import rasterio
@@ -23,6 +22,16 @@ try:
     import gdal
 except ImportError:
     from osgeo import gdal
+
+
+def sanitize_filename(filename):
+    """
+        some files have '/' in their name like "1/3 arc-second," so we'll fix it
+    """
+    invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    for char in invalid_chars:
+        filename = filename.replace(char, "-")  # Replace invalid characters with '_'
+    return filename
 
 
 # =================================================================
@@ -323,8 +332,9 @@ def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, 
     vpu_code = str(vpu_polygon.iloc[0][vpu_col])
     
     # 3. download the streams_vpu.gpkg (Keep this in the main flowline_dir to share across sites)
-    os.makedirs(flowline_dir, exist_ok=True)
-    flowline_vpu = os.path.join(flowline_dir, f"streams_{vpu_code}.gpkg")
+    raw_tdx_dir = os.path.join(flowline_dir, "raw_tdx")
+    os.makedirs(raw_tdx_dir, exist_ok=True)
+    flowline_vpu = os.path.join(raw_tdx_dir, f"streams_{vpu_code}.gpkg")
     
     if not os.path.exists(flowline_vpu):
         try:
@@ -366,123 +376,144 @@ def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, 
 # 2. DEM FUNCTIONS (3DEP & METADATA)
 # =================================================================
 
-def download_dem(lhd_id, flowline_gdf, dem_dir, res_meters=1):
+def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
     """
-        Fetches 3DEP DEM using flowline extent with 10m fallback and metadata tracking.
+    Directly queries the TNM API to find all 1m tiles along the flowline,
+    downloads them, and merges them into a rectangular grid for ARC.
+    
+    resolution: "1" for 1m, "10" for 1/3 arc-second (approx 10m).
     """
     try:
         if flowline_gdf is None or flowline_gdf.empty:
-            print(f"Dam {lhd_id}: Flowline GDF is empty.")
+            print(f"Dam {lhd_id}: Flowline GDF is None or empty.")
             return None, None, "No Flowlines"
 
-        # Ensure CRS is EPSG:4326
+        # 1. Project to WGS84 for API query
         if flowline_gdf.crs and flowline_gdf.crs.to_epsg() != 4326:
-            try:
-                # print(f"Dam {lhd_id}: Reprojecting flowlines from {flowline_gdf.crs} to EPSG:4326")
-                flowline_gdf = flowline_gdf.to_crs(epsg=4326)
-            except Exception as e:
-                print(f"Dam {lhd_id}: Reprojection failed: {e}")
-                return None, None, "Reprojection Error"
+            flowline_gdf = flowline_gdf.to_crs(epsg=4326)
 
-        # Remove empty geometries
-        flowline_gdf = flowline_gdf[~flowline_gdf.is_empty]
-        if flowline_gdf.empty:
-             print(f"Dam {lhd_id}: Flowline GDF contains only empty geometries.")
-             return None, None, "Empty Geometries"
-
-        # 1. Setup Bounding Box (tuple of length 4) and buffered Geometry
         b = flowline_gdf.total_bounds
-        
-        if np.any(np.isnan(b)):
-             print(f"Dam {lhd_id}: Flowline bounds contain NaNs.")
-             return None, None, "Invalid Bounds"
-
-        # Ensure bbox has non-zero dimensions to avoid degenerate polygons
-        minx, miny, maxx, maxy = b
-        if maxx - minx < 1e-5:
-            minx -= 0.0005
-            maxx += 0.0005
-        if maxy - miny < 1e-5:
-            miny -= 0.0005
-            maxy += 0.0005
-
-        # Apply buffer to the bbox coordinates directly
-        # This effectively creates an "envelope" around the flowline extent
         buffer_deg = 0.002
-        minx -= buffer_deg
-        miny -= buffer_deg
-        maxx += buffer_deg
-        maxy += buffer_deg
-
-        bbox = (float(minx), float(miny), float(maxx), float(maxy))
+        bbox = (float(b[0] - buffer_deg), float(b[1] - buffer_deg),
+                float(b[2] + buffer_deg), float(b[3] + buffer_deg))
         
-        # 2. Extract Lidar Project Metadata
-        try:
-            sources_gdf = py3dep.query_3dep_sources(bbox)
-        except Exception as e:
-            print(f"Warning: Could not query 3DEP sources: {e}")
-            sources_gdf = gpd.GeoDataFrame()
+        print(f"Dam {lhd_id}: Bounding box for query: {bbox}")
 
-        project_info = "Unknown"
-        if not sources_gdf.empty:
-            res_str = f"{res_meters}m" if res_meters in [1, 3, 10] else "1m"
-            relevant_sources = sources_gdf[sources_gdf['dem_res'] == res_str]
+        # 2. Query TNM API
+        tnm_url = "https://tnmaccess.nationalmap.gov/api/v1/products"
+        
+        # Determine datasets to query based on resolution
+        datasets_to_try = []
+        
+        # If resolution is explicitly 10m, prioritize 1/3 arc-second
+        if str(resolution) == "10":
+            datasets_to_try.append("National Elevation Dataset (NED) 1/3 arc-second Current")
+            # Optionally try 1m as fallback? Or just stick to 10m?
+            # Let's stick to 10m if requested, but maybe fallback to 1m if 10m fails?
+            # Usually 10m covers more area.
+        else:
+            # Default behavior: Try 1m first, then 1/3 arc-second
+            datasets_to_try.append("Digital Elevation Model (DEM) 1 meter")
+            datasets_to_try.append("National Elevation Dataset (NED) 1/3 arc-second Current")
 
-            if not relevant_sources.empty:
-                # Define a list of possible column names for the project name
-                possible_cols = ['workunit_name', 'workunit', 'project_id', 'workunitname', 'dataset_id']
+        items = []
+        found_dataset = ""
+        
+        for dataset_name in datasets_to_try:
+            params = {
+                "datasets": dataset_name,
+                "bbox": f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
+                "outputFormat": "JSON"
+            }
 
-                # Find the first one that actually exists in the dataframe
-                actual_col = next((c for c in possible_cols if c in relevant_sources.columns), None)
-
-                if actual_col:
-                    names = relevant_sources[actual_col].unique().tolist()
-                    project_info = "; ".join(map(str, names))
-                else:
-                    project_info = "Metadata columns mismatch"
-
-        # 3. Availability and Download Loop
-        try:
-            availability = py3dep.check_3dep_availability(bbox)
-        except Exception as e:
-            # DEBUG: Print why availability check failed
-            # print(f"Dam {lhd_id}: check_3dep_availability failed. BBox: {bbox}")
-            # print(f"Error: {e}")
-            availability = {}
+            print(f"Dam {lhd_id}: Searching for {dataset_name} tiles...")
+            print(f"Dam {lhd_id}: Querying TNM API at {tnm_url} with params: {params}")
             
-        res_to_try = [1, 10] if (res_meters == 1 and availability.get('1m')) else [10]
-
-        for res in res_to_try:
-            # Note: crs="EPSG:4326" tells Py3DEP our 'geom' is WGS84
-            dem = None
-            last_error = None
-            for attempt in range(3):
-                try:
-                    # CHANGED: Pass bbox tuple directly to get_dem
-                    dem = py3dep.get_dem(bbox, resolution=res, crs="EPSG:4326")
-                    break
-                except Exception as e:
-                    last_error = e
-                    time.sleep(1 * (attempt + 1))
+            response_obj = requests.get(tnm_url, params=params)
+            print(f"Dam {lhd_id}: TNM API Response Status: {response_obj.status_code}")
             
-            if dem is None and last_error:
-                print(f"Dam {lhd_id}: py3dep.get_dem failed for res {res}m after retries. Error: {last_error}")
+            try:
+                response = response_obj.json()
+            except Exception as json_err:
+                print(f"Dam {lhd_id}: Failed to parse JSON response: {response_obj.text[:500]}")
+                # Don't raise here, try next dataset
                 continue
+                
+            items = response.get("items", [])
+            print(f"Dam {lhd_id}: Found {len(items)} items for {dataset_name}.")
+            
+            if items:
+                found_dataset = dataset_name
+                break
 
-            if dem is not None and not np.all(np.isnan(dem.values)):
-                clean_name = f"LHD_{lhd_id}_3DEP_{res}m_NAVD88.tif"
-                out_path = os.path.join(dem_dir, str(lhd_id), clean_name)
-                os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                dem.rio.to_raster(out_path)
-                return out_path, res, project_info
-        
-        # If we exit the loop without returning, it means no DEM was found
-        return None, None, "No DEM Found"
+        if not items:
+            print(f"Dam {lhd_id}: No DEM tiles found in TNM API for requested resolutions.")
+            return None, None, "No DEM Found"
+
+        # 3. Download tiles to a regional folder
+        raw_dem_dir = os.path.join(dem_dir, 'raw_3dep')
+        os.makedirs(raw_dem_dir, exist_ok=True)
+        downloaded_tiles = []
+
+        for item in items:
+            tile_url = item.get("downloadURL")
+            if not tile_url:
+                print(f"Dam {lhd_id}: Item missing downloadURL: {item}")
+                continue
+                
+            tile_name = sanitize_filename(os.path.basename(tile_url))  # Using your sanitize logic
+            local_path = os.path.join(raw_dem_dir, tile_name)
+
+            if not os.path.exists(local_path):
+                print(f"Downloading: {tile_name} from {tile_url}")
+                try:
+                    r = requests.get(tile_url, stream=True)
+                    r.raise_for_status()
+                    with open(local_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                except Exception as dl_err:
+                    print(f"Dam {lhd_id}: Error downloading {tile_url}: {dl_err}")
+                    continue
+
+            downloaded_tiles.append(local_path)
+            
+        print(f"Dam {lhd_id}: Downloaded tiles: {downloaded_tiles}")
+
+        if not downloaded_tiles:
+            print(f"Dam {lhd_id}: No tiles were successfully downloaded.")
+            return None, None, "Download Failed"
+
+        # 4. Warp & Merge (Produces the Rectangular DEM for ARC)
+        site_dem_dir = os.path.join(dem_dir, str(lhd_id))
+        os.makedirs(site_dem_dir, exist_ok=True)
+        out_path = os.path.join(site_dem_dir, f"LHD_{lhd_id}_3DEP_DEM.tif")
+
+        print(f"Dam {lhd_id}: Merging {len(downloaded_tiles)} tiles into rectangular DEM at {out_path}...")
+        try:
+            gdal.Warp(
+                out_path,
+                downloaded_tiles,
+                resampleAlg=gdal.GRA_Bilinear,
+                format='GTiff',
+                creationOptions=['COMPRESS=LZW']
+            )
+        except Exception as warp_err:
+             print(f"Dam {lhd_id}: gdal.Warp failed: {warp_err}")
+             raise warp_err
+
+        if os.path.exists(out_path):
+             print(f"Dam {lhd_id}: Output DEM created successfully at {out_path}")
+        else:
+             print(f"Dam {lhd_id}: Output DEM NOT created at {out_path} (gdal.Warp returned but file missing)")
+
+        # Return resolution in meters (approx)
+        res_val = 1 if "1 meter" in found_dataset else 10
+        return out_path, res_val, "USGS TNM API"
 
     except Exception as e:
-        print(f"Error prepping Dam {lhd_id}: {e}")
-        if 'b' in locals():
-            print(f"  - Bounds used: {b}")
+        print(f"Dam {lhd_id}: Critical Error in download_dem: {e}")
+        traceback.print_exc()
         return None, None, "Error"
 
 
