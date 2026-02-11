@@ -52,10 +52,13 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
         for attempt in range(3):
             try:
                 nldi = NLDI()
+                # Explicitly check if nldi was actually created
+                if nldi is None:
+                    raise ValueError("NLDI service returned None")
                 break
             except Exception as e:
                 if attempt < 2:
-                    time.sleep(2)
+                    time.sleep(5)  # Increase sleep time
                 else:
                     print(f"Failed to initialize NLDI after retries: {e}")
                     return None, None

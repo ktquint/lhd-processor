@@ -95,9 +95,9 @@ def main():
     tab4 = ttk.Frame(notebook)
     tab5 = ttk.Frame(notebook)  # New Log Tab
 
-    notebook.add(tab1, text="  Download  ")
+    notebook.add(tab1, text="  GIS Data  ")
     notebook.add(tab2, text="  ARC  ")
-    notebook.add(tab3, text="  Calculation  ")
+    notebook.add(tab3, text="  Hydraulics  ")
     notebook.add(tab4, text="  Visualization  ")
     notebook.add(tab5, text="  Logs  ")
     notebook.pack(expand=True, fill="both", padx=10, pady=10)
