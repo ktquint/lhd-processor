@@ -494,6 +494,8 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
             gdal.Warp(
                 out_path,
                 downloaded_tiles,
+                outputBounds=bbox,
+                outputBoundsSRS='EPSG:4326',
                 resampleAlg=gdal.GRA_Bilinear,
                 format='GTiff',
                 creationOptions=['COMPRESS=LZW']

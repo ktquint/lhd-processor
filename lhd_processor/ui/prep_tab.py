@@ -253,7 +253,7 @@ def create_mannings_esa(manning_txt):
         f.write('80\tWater\t0.030\n')
         f.write('90\tHerbaceous Wetland\t0.100\n')
         f.write('95\tMangroves\t0.100\n')
-        f.write('100\tMossLichen\t0.100\n')
+        f.write('100\tMossLichen\t0.035\n')
 
 
 def process_single_dam_arc(dam_dict, results_dir, flowline_source, streamflow_source, baseflow_method):
