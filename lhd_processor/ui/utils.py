@@ -16,7 +16,7 @@ def init_utils(app_root):
 
     # Status Message
     status_var = tk.StringVar()
-    status_var.set("Ready. Please select a Project Folder in the 'Preparation' tab to begin.")
+    status_var.set("Ready. Please select a Database File to begin.")
 
     # Progress Bar (0.0 to 100.0)
     progress_var = tk.DoubleVar(value=0.0)

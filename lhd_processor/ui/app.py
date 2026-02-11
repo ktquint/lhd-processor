@@ -2,7 +2,7 @@ import sys
 import tkinter as tk
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
-from . import utils, prep_tab, analysis_tab
+from . import utils, download_tab, arc_tab, calc_tab, vis_tab
 
 
 # --- Helper Classes ---
@@ -91,19 +91,25 @@ def main():
     notebook = ttk.Notebook(content_frame)
     tab1 = ttk.Frame(notebook)
     tab2 = ttk.Frame(notebook)
-    tab3 = ttk.Frame(notebook)  # New Log Tab
+    tab3 = ttk.Frame(notebook)
+    tab4 = ttk.Frame(notebook)
+    tab5 = ttk.Frame(notebook)  # New Log Tab
 
-    notebook.add(tab1, text="  Preparation & Processing  ")
-    notebook.add(tab2, text="  Analysis & Visualization  ")
-    notebook.add(tab3, text="  Logs  ")
+    notebook.add(tab1, text="  Download  ")
+    notebook.add(tab2, text="  ARC  ")
+    notebook.add(tab3, text="  Calculation  ")
+    notebook.add(tab4, text="  Visualization  ")
+    notebook.add(tab5, text="  Logs  ")
     notebook.pack(expand=True, fill="both", padx=10, pady=10)
 
     # 3. Setup Tab Content
-    prep_tab.setup_prep_tab(tab1)
-    analysis_tab.setup_analysis_tab(tab2)
+    download_tab.setup_download_tab(tab1)
+    arc_tab.setup_arc_tab(tab2)
+    calc_tab.setup_calc_tab(tab3)
+    vis_tab.setup_vis_tab(tab4)
 
     # 4. Setup Log Tab
-    log_text = ScrolledText(tab3, state="disabled", height=20, width=80)
+    log_text = ScrolledText(tab5, state="disabled", height=20, width=80)
     log_text.pack(fill="both", expand=True, padx=5, pady=5)
 
     # Redirect print() to this tab
@@ -129,30 +135,45 @@ def main():
         # Use try/except to prevent crashing if widgets aren't fully initialized
         try:
             settings = {
-                # Prep Tab - Paths
-                "database_path": prep_tab.database_entry.get() if prep_tab.database_entry else "",
-                "dem_dir": prep_tab.dem_entry.get() if prep_tab.dem_entry else "",
-                "strm_dir": prep_tab.strm_entry.get() if prep_tab.strm_entry else "",
-                "land_dir": prep_tab.land_use_entry.get() if prep_tab.land_use_entry else "",
-                # "results_dir": prep_tab.results_entry.get() if prep_tab.results_entry else "", # Removed from UI
+                # Download Tab - Paths
+                "database_path": download_tab.database_entry.get() if download_tab.database_entry else "",
+                "dem_dir": download_tab.dem_entry.get() if download_tab.dem_entry else "",
+                "strm_dir": download_tab.strm_entry.get() if download_tab.strm_entry else "",
+                "land_dir": download_tab.land_use_entry.get() if download_tab.land_use_entry else "",
                 
-                # ARC Step 2 Paths
-                "arc_xlsx": prep_tab.arc_xlsx_entry.get() if prep_tab.arc_xlsx_entry else "",
-                "arc_results": prep_tab.arc_results_entry.get() if prep_tab.arc_results_entry else "",
+                # ARC Tab Paths
+                "arc_xlsx": arc_tab.arc_xlsx_entry.get() if arc_tab.arc_xlsx_entry else "",
+                "arc_results": arc_tab.arc_results_entry.get() if arc_tab.arc_results_entry else "",
 
-                # Prep Tab - Dropdowns
-                "flowline_source": prep_tab.flowline_var.get() if prep_tab.flowline_var else "",
-                "dem_res": prep_tab.dd_var.get() if prep_tab.dd_var else "",
-                "streamflow_source": prep_tab.streamflow_var.get() if prep_tab.streamflow_var else "",
+                # Download Tab - Dropdowns
+                "flowline_source": download_tab.flowline_var.get() if download_tab.flowline_var else "",
+                "dem_res": download_tab.dd_var.get() if download_tab.dd_var else "",
+                "streamflow_source": download_tab.streamflow_var.get() if download_tab.streamflow_var else "",
                 
-                # ARC Step 2 Dropdowns
-                "arc_flowline": prep_tab.arc_flowline_var.get() if prep_tab.arc_flowline_var else "",
-                "arc_streamflow": prep_tab.arc_streamflow_var.get() if prep_tab.arc_streamflow_var else "",
-                "arc_baseflow": prep_tab.arc_baseflow_var.get() if prep_tab.arc_baseflow_var else "",
+                # ARC Tab Dropdowns
+                "arc_flowline": arc_tab.arc_flowline_var.get() if arc_tab.arc_flowline_var else "",
+                "arc_streamflow": arc_tab.arc_streamflow_var.get() if arc_tab.arc_streamflow_var else "",
+                "arc_baseflow": arc_tab.arc_baseflow_var.get() if arc_tab.arc_baseflow_var else "",
 
-                # Analysis Tab
-                "analysis_db": analysis_tab.db_entry.get() if analysis_tab.db_entry else "",
-                "analysis_res": analysis_tab.res_entry.get() if analysis_tab.res_entry else ""
+                # Calc Tab
+                "calc_db": calc_tab.db_entry.get() if calc_tab.db_entry else "",
+                "calc_res": calc_tab.res_entry.get() if calc_tab.res_entry else "",
+                "calc_mode": calc_tab.calc_mode_var.get() if calc_tab.calc_mode_var else "",
+                "calc_flowline": calc_tab.flowline_source_var.get() if calc_tab.flowline_source_var else "",
+                "calc_streamflow": calc_tab.streamflow_source_var.get() if calc_tab.streamflow_source_var else "",
+
+                # Vis Tab
+                "vis_db": vis_tab.db_entry.get() if vis_tab.db_entry else "",
+                "vis_res": vis_tab.res_entry_display.get() if vis_tab.res_entry_display else "",
+                "vis_flowline": vis_tab.flowline_source_var.get() if vis_tab.flowline_source_var else "",
+                "vis_streamflow": vis_tab.streamflow_source_var.get() if vis_tab.streamflow_source_var else "",
+                "vis_dam_sel": vis_tab.dam_dropdown.get() if vis_tab.dam_dropdown else "",
+                "vis_chk_xs": vis_tab.chk_xs.get() if vis_tab.chk_xs else False,
+                "vis_chk_rc": vis_tab.chk_rc.get() if vis_tab.chk_rc else False,
+                "vis_chk_map": vis_tab.chk_map.get() if vis_tab.chk_map else False,
+                "vis_chk_wsp": vis_tab.chk_wsp.get() if vis_tab.chk_wsp else False,
+                "vis_chk_fdc": vis_tab.chk_fdc.get() if vis_tab.chk_fdc else False,
+                "vis_chk_bar": vis_tab.chk_bar.get() if vis_tab.chk_bar else False,
             }
 
             # Save using utils (ensure you added save_settings to utils.py!)
@@ -181,27 +202,50 @@ def main():
                 if tk_var and key in settings:
                     tk_var.set(settings[key])
 
-            # Prep Tab
-            set_entry(prep_tab.database_entry, "database_path")
-            set_entry(prep_tab.dem_entry, "dem_dir")
-            set_entry(prep_tab.strm_entry, "strm_dir")
-            set_entry(prep_tab.land_use_entry, "land_dir")
-            # set_entry(prep_tab.results_entry, "results_dir")
+            # Download Tab
+            set_entry(download_tab.database_entry, "database_path")
+            set_entry(download_tab.dem_entry, "dem_dir")
+            set_entry(download_tab.strm_entry, "strm_dir")
+            set_entry(download_tab.land_use_entry, "land_dir")
             
-            set_entry(prep_tab.arc_xlsx_entry, "arc_xlsx")
-            set_entry(prep_tab.arc_results_entry, "arc_results")
+            set_entry(arc_tab.arc_xlsx_entry, "arc_xlsx")
+            set_entry(arc_tab.arc_results_entry, "arc_results")
 
-            set_var(prep_tab.flowline_var, "flowline_source")
-            set_var(prep_tab.dd_var, "dem_res")
-            set_var(prep_tab.streamflow_var, "streamflow_source")
+            set_var(download_tab.flowline_var, "flowline_source")
+            set_var(download_tab.dd_var, "dem_res")
+            set_var(download_tab.streamflow_var, "streamflow_source")
             
-            set_var(prep_tab.arc_flowline_var, "arc_flowline")
-            set_var(prep_tab.arc_streamflow_var, "arc_streamflow")
-            set_var(prep_tab.arc_baseflow_var, "arc_baseflow")
+            set_var(arc_tab.arc_flowline_var, "arc_flowline")
+            set_var(arc_tab.arc_streamflow_var, "arc_streamflow")
+            set_var(arc_tab.arc_baseflow_var, "arc_baseflow")
 
-            # Analysis Tab
-            set_entry(analysis_tab.db_entry, "analysis_db")
-            set_entry(analysis_tab.res_entry, "analysis_res")
+            # Calc Tab
+            set_entry(calc_tab.db_entry, "calc_db")
+            set_entry(calc_tab.res_entry, "calc_res")
+            set_var(calc_tab.calc_mode_var, "calc_mode")
+            set_var(calc_tab.flowline_source_var, "calc_flowline")
+            set_var(calc_tab.streamflow_source_var, "calc_streamflow")
+
+            # Vis Tab
+            set_entry(vis_tab.db_entry, "vis_db")
+            set_entry(vis_tab.res_entry_display, "vis_res")
+            set_var(vis_tab.flowline_source_var, "vis_flowline")
+            set_var(vis_tab.streamflow_source_var, "vis_streamflow")
+            
+            set_var(vis_tab.chk_xs, "vis_chk_xs")
+            set_var(vis_tab.chk_rc, "vis_chk_rc")
+            set_var(vis_tab.chk_map, "vis_chk_map")
+            set_var(vis_tab.chk_wsp, "vis_chk_wsp")
+            set_var(vis_tab.chk_fdc, "vis_chk_fdc")
+            set_var(vis_tab.chk_bar, "vis_chk_bar")
+
+            # Trigger update for dropdown in Vis Tab
+            if vis_tab.res_entry_display.get():
+                # Pre-set the dropdown value so update_dropdown tries to preserve it
+                if "vis_dam_sel" in settings and vis_tab.dam_dropdown:
+                     vis_tab.dam_dropdown.set(settings["vis_dam_sel"])
+
+                vis_tab.update_dropdown()
 
             print("Startup settings loaded successfully.")
 
