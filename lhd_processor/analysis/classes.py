@@ -715,7 +715,6 @@ class Dam:
                             jump = hydraulic_jump_type(y_2, y_t, y_flip)
                             hydro_results_list.append({
                                 'site_id': self.id,
-                                'dam_id': self.id,
                                 'date': date,
                                 'xs_index': export_idx,
                                 'y_t': y_t,
