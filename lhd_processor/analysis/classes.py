@@ -22,7 +22,9 @@ from .hydraulics import (solve_weir_geom,
                          solve_y1_adv,
                          solve_y1_simp,
                          rating_curve_intercepts_simp,
-                         rating_curve_intercept_adv)
+                         rating_curve_intercept_adv,
+                         calc_froude_custom,
+                         solve_Fr_simp)
 
 from .utils import (merge_arc_results,
                     merge_databases,
@@ -107,6 +109,12 @@ class CrossSection:
         # rating curve equation D = a * Q**b
         val_a = xs_row.get('depth_a', 0)
         val_b = xs_row.get('depth_b', 0)
+        
+        # New variables
+        val_vel_a = xs_row.get('vel_a', 0)
+        val_vel_b = xs_row.get('vel_b', 0)
+        val_tw_a = xs_row.get('tw_a', 0)
+        val_tw_b = xs_row.get('tw_b', 0)
 
         def _parse_val(v):
             if isinstance(v, str):
@@ -121,6 +129,12 @@ class CrossSection:
 
         self.a = _parse_val(val_a)
         self.b = _parse_val(val_b)
+        
+        self.vel_a = _parse_val(val_vel_a)
+        self.vel_b = _parse_val(val_vel_b)
+        self.tw_a = _parse_val(val_tw_a)
+        self.tw_b = _parse_val(val_tw_b)
+        
         # load the dam's flow series
         self.flow_series = self.parent_dam.flow_series
         
@@ -613,12 +627,27 @@ class Dam:
         upstream_xs = self.get_upstream_xs()
         
         for i, xs in enumerate(self.cross_sections):
+            
+            # Determine export index based on location label
+            if xs.location == 'Upstream':
+                export_idx = 0
+            else:
+                try:
+                    # Extract number from "DownstreamX"
+                    export_idx = int(xs.location_label.replace('Downstream', ''))
+                except ValueError:
+                    export_idx = i # Fallback
+            
             xs_info = {
                 'site_id': self.id,
-                'xs_index': i,
+                'xs_index': export_idx,
                 'Slope': xs.slope,
                 'depth_a': xs.a,
                 'depth_b': xs.b,
+                'vel_a': xs.vel_a,
+                'vel_b': xs.vel_b,
+                'tw_a': xs.tw_a,
+                'tw_b': xs.tw_b,
                 'P_height': None
             }
             if xs != upstream_xs:
@@ -673,10 +702,13 @@ class Dam:
                             H_current = weir_H_simp(Q, xs.L)
                             
                             if self.calc_mode == "Advanced":
+                                y_1_curr = solve_y1_adv(Q, xs.L, H_current, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
                                 y_2 = solve_y2_adv(Q, xs.L, H_current, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                                Fr_1 = calc_froude_custom(Q, y_1_curr, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
                             else:
-                                # H = weir_H_simp(Q, xs.L) # Already calculated
+                                y_1_curr = solve_y1_simp(H_current, xs.P)
                                 y_2 = calc_y2_simp(H_current, xs.P)
+                                Fr_1 = solve_Fr_simp(H_current, xs.P)
 
 
                             y_flip = compute_y_flip(Q, xs.L, xs.P)
@@ -685,10 +717,12 @@ class Dam:
                                 'site_id': self.id,
                                 'dam_id': self.id,
                                 'date': date,
-                                'xs_index': i,
+                                'xs_index': export_idx,
                                 'y_t': y_t,
                                 'y_flip': y_flip,
+                                'y_1': y_1_curr,
                                 'y_2': y_2,
+                                'Fr_1': Fr_1,
                                 'jump_type': jump,
                             })
                         except:
