@@ -8,8 +8,8 @@ import pandas as pd
 import geopandas as gpd
 import contextily as ctx
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
 from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.ticker import FixedLocator
 from matplotlib_scalebar.scalebar import ScaleBar
 
@@ -684,6 +684,20 @@ class Dam:
                         q_min, q_max = xs.get_dangerous_flow_range()
                         xs_info['Qmin'] = q_min
                         xs_info['Qmax'] = q_max
+                        
+                        # Calculate probabilities
+                        if self.flow_series is not None and not self.flow_series.empty:
+                             flow_cms = self.flow_series.dropna().values
+                             sorted_flow = np.sort(flow_cms)[::-1]
+                             n = len(sorted_flow)
+                             exceedance = 100 * np.arange(1, n + 1) / (n + 1)
+                             fdc_df = pd.DataFrame({'Exceedance (%)': exceedance, 'Flow (cms)': sorted_flow})
+                             
+                             xs_info['prob_min'] = get_prob_from_Q(q_min, fdc_df)
+                             xs_info['prob_max'] = get_prob_from_Q(q_max, fdc_df)
+                        else:
+                             xs_info['prob_min'] = None
+                             xs_info['prob_max'] = None
                     except:
                         pass
 
@@ -715,6 +729,7 @@ class Dam:
                             jump = hydraulic_jump_type(y_2, y_t, y_flip)
                             hydro_results_list.append({
                                 'site_id': self.id,
+                                'dam_id': self.id,
                                 'date': date,
                                 'xs_index': export_idx,
                                 'y_t': y_t,
