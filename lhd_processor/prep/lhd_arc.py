@@ -1,6 +1,5 @@
 # build-in imports
 import ast
-import os
 import gc
 from pathlib import Path
 
@@ -414,6 +413,11 @@ class ArcDam:
         
         if not self.output_dir:
              print("  ❌ Output directory not specified.")
+             return
+
+        # check if stream raster exists
+        if self.strm_tif_clean is None or not Path(self.strm_tif_clean).exists():
+             print(f"  ⚠️ Skipping Dam {self.dam_id}: Stream file path is None or file does not exist.")
              return
 
         # Ensure output_dir is a Path

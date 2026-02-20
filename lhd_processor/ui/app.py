@@ -70,7 +70,7 @@ def main():
     root = tk.Tk()
     root.title("LHD Control Center")
     # Geometry can be smaller now because we have a scrollbar!
-    root.geometry("750x800")
+    root.geometry("800x800")
 
     # Initialize shared utils (root and status var)
     utils.init_utils(root)
