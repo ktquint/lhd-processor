@@ -86,7 +86,7 @@ class ArcDam:
             self.manning_n_txt = self.land_raster.parent.parent / 'Manning_n.txt'
         else:
             self.manning_n_txt = None
-
+            
         self.flowline_source = flowline_source
         self.streamflow_source = streamflow_source
         self.baseflow_method = baseflow_method
@@ -128,7 +128,7 @@ class ArcDam:
     def _create_arc_input_txt(self, Q_baseflow, Q_max):
         """Full implementation of ARC input generation with all original parameters."""
         x_section_dist = int(10 * self.weir_length)
-
+        
         with open(self.arc_input, 'w') as out_file:
             out_file.write('#ARC_Inputs\n')
             out_file.write(f'DEM_File\t{self.dem_path}\n')

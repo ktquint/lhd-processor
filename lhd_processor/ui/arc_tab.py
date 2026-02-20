@@ -20,13 +20,14 @@ arc_results_entry = None
 arc_flowline_var = None
 arc_streamflow_var = None
 arc_baseflow_var = None
+arc_manning_entry = None
 arc_run_button = None
 arc_stop_button = None
 
 stop_event = threading.Event()
 
 def setup_arc_tab(parent_tab):
-    global arc_xlsx_entry, arc_results_entry, arc_flowline_var, arc_streamflow_var, arc_baseflow_var
+    global arc_xlsx_entry, arc_results_entry, arc_flowline_var, arc_streamflow_var, arc_baseflow_var, arc_manning_entry
     global arc_run_button, arc_stop_button
 
     arc_frame = ttk.LabelFrame(parent_tab, text="Step 2: Automated Rating Curves")
@@ -75,9 +76,15 @@ def setup_arc_tab(parent_tab):
     arc_baseflow_var = tk.StringVar(value="WSE and LiDAR Date")
     ttk.Combobox(bf_frame, textvariable=arc_baseflow_var, state="readonly", values=("WSE and LiDAR Date", "WSE and Median Daily Flow", "2-yr Flow and Bank Estimation")).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
 
-    # Row 4: Buttons
+    # Row 4: Manning's n
+    ttk.Label(arc_frame, text="Manning's n:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+    arc_manning_entry = ttk.Entry(arc_frame)
+    arc_manning_entry.insert(0, "0.035")
+    arc_manning_entry.grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
+
+    # Row 5: Buttons
     btn_frame = ttk.Frame(arc_frame)
-    btn_frame.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=10)
+    btn_frame.grid(row=5, column=0, columnspan=3, sticky=tk.EW, pady=10)
     btn_frame.columnconfigure(0, weight=1)
     btn_frame.columnconfigure(1, weight=1)
 
@@ -106,6 +113,21 @@ def select_arc_results_dir():
         arc_results_entry.delete(0, tk.END)
         arc_results_entry.insert(0, d)
 
+def create_mannings_esa(manning_txt, manning_n_value):
+    with open(manning_txt, 'w') as f:
+        f.write('LC_ID\tDescription\tManning_n\n')
+        f.write(f'10\tTree Cover\t{manning_n_value}\n')
+        f.write(f'20\tShrubland\t{manning_n_value}\n')
+        f.write(f'30\tGrassland\t{manning_n_value}\n')
+        f.write(f'40\tCropland\t{manning_n_value}\n')
+        f.write(f'50\tBuiltup\t{manning_n_value}\n')
+        f.write(f'60\tBare\t{manning_n_value}\n')
+        f.write(f'70\tSnowIce\t{manning_n_value}\n')
+        f.write(f'80\tWater\t{manning_n_value}\n')
+        f.write(f'90\tHerbaceous Wetland\t{manning_n_value}\n')
+        f.write(f'95\tMangroves\t{manning_n_value}\n')
+        f.write(f'100\tMossLichen\t{manning_n_value}\n')
+
 def process_single_dam_arc(dam_dict, results_dir, flowline_source, streamflow_source, baseflow_method):
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ['GDAL_CACHEMAX'] = '256'
@@ -132,10 +154,26 @@ def threaded_run_arc():
         fl_source = arc_flowline_var.get()
         sf_source = arc_streamflow_var.get()
         bf_method = arc_baseflow_var.get()
+        manning_n = arc_manning_entry.get()
         
         if not os.path.exists(excel_loc):
             messagebox.showerror("Error", "Excel database not found.")
             return
+
+        try:
+            manning_n_value = float(manning_n)
+        except ValueError:
+            messagebox.showerror("Error", "Invalid Manning's n value.")
+            return
+
+        # Create shared Manning's n file
+        # Assuming the LAND folder is in the same directory as the Excel file
+        project_path = os.path.dirname(excel_loc)
+        land_folder = os.path.join(project_path, "LAND")
+        os.makedirs(land_folder, exist_ok=True)
+        manning_txt = os.path.join(land_folder, 'Manning_n.txt')
+        create_mannings_esa(manning_txt, manning_n_value)
+        utils.set_status(f"Created shared Manning's n file at {manning_txt}")
 
         df = pd.read_excel(excel_loc)
         dams = df.to_dict(orient='records')

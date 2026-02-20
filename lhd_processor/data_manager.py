@@ -59,6 +59,9 @@ class DatabaseManager:
 
     def _enforce_schema(self, df, schema):
         if df.empty: return pd.DataFrame(columns=schema)
+        # Remove columns not in schema
+        df = df[[col for col in df.columns if col in schema]]
+        # Add missing columns
         for col in schema:
             if col not in df.columns: df[col] = None
         return df
