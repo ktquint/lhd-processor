@@ -100,6 +100,7 @@ def threaded_analysis(mode, params):
         total = len(valid_ids)
         if total == 0:
             utils.set_status("No processed dams found.")
+            messagebox.showwarning("No Data", "No processed dams found in the specified Results folder.")
             return
 
         worker_count = 2
@@ -124,6 +125,7 @@ def threaded_analysis(mode, params):
                         utils.set_status(f"Analyzed Dam {dam_id} ({processed_count}/{total})")
                     else:
                         print(f"Error on Dam {dam_id}: {err}")
+                        utils.set_status(f"Error on Dam {dam_id}: {err}")
 
         utils.set_status("Saving all results to database...")
         db.save()
@@ -146,5 +148,5 @@ def start_analysis():
         "f_source": flowline_source_var.get(),
         "s_source": streamflow_source_var.get(),
     }
-    
+
     threading.Thread(target=threaded_analysis, args=(mode, params), daemon=True).start()

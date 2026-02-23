@@ -30,13 +30,16 @@ class DatabaseManager:
 
         self.xsections_schema = [
             'site_id', 'xs_index', 'Slope', 'P_height',
-            'Qmin', 'Qmax', 'depth_a', 'depth_b'
+            'Qmin', 'Qmax', 'depth_a', 'depth_b',
+            'vel_a', 'vel_b', 'tw_a', 'tw_b',
+            'prob_min', 'prob_max'
         ]
 
         # Dynamic results
         self.results_schema = [
             'site_id', 'date', 'xs_index',
-            'y_t', 'y_flip', 'y_2', 'jump_type'
+            'y_t', 'y_flip', 'y_2', 'jump_type',
+            'y_1', 'Fr_1'
         ]
 
         # Abbreviation map for sheet names
@@ -60,7 +63,7 @@ class DatabaseManager:
     def _enforce_schema(self, df, schema):
         if df.empty: return pd.DataFrame(columns=schema)
         # Remove columns not in schema
-        df = df[[col for col in df.columns if col in schema]]
+        df = df[[col for col in df.columns if col in schema]].copy()
         # Add missing columns
         for col in schema:
             if col not in df.columns: df[col] = None
@@ -221,7 +224,9 @@ class DatabaseManager:
                 new_res = results_df.copy()
                 new_res['site_id'] = site_id
                 new_res = self._enforce_schema(new_res, self.results_schema)
-                current_res = pd.concat([current_res, new_res], ignore_index=True)
+                # Ensure new_res is not empty or all-NA before concat
+                if not new_res.dropna(how='all').empty:
+                    current_res = pd.concat([current_res, new_res], ignore_index=True)
 
             self.results[res_sheet] = current_res
 
@@ -238,7 +243,9 @@ class DatabaseManager:
                 new_xs = pd.DataFrame(xs_data)
                 new_xs['site_id'] = site_id
                 new_xs = self._enforce_schema(new_xs, self.xsections_schema)
-                current_xs = pd.concat([current_xs, new_xs], ignore_index=True)
+                # Ensure new_xs is not empty or all-NA before concat
+                if not new_xs.dropna(how='all').empty:
+                    current_xs = pd.concat([current_xs, new_xs], ignore_index=True)
             
             self.xsections[xs_sheet] = current_xs
 
@@ -250,6 +257,8 @@ class DatabaseManager:
                 new_res = pd.DataFrame(hydraulic_data)
                 new_res['site_id'] = site_id
                 new_res = self._enforce_schema(new_res, self.results_schema)
-                current_res = pd.concat([current_res, new_res], ignore_index=True)
+                # Ensure new_res is not empty or all-NA before concat
+                if not new_res.dropna(how='all').empty:
+                    current_res = pd.concat([current_res, new_res], ignore_index=True)
 
             self.results[res_sheet] = current_res
