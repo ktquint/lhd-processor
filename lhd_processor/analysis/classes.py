@@ -143,6 +143,8 @@ class CrossSection:
             if len(vals) > 0:
                 self.Qmin = np.min(vals)
                 self.Qmax = np.max(vals)
+
+            # these else statements should low-key never happen...
             else:
                 self.Qmin = 0.0
                 self.Qmax = 100.0
@@ -391,6 +393,7 @@ class CrossSection:
             # We need to calculate H for the current Q to get the correct sequent depth.
             
             # Using simplified weir equation to estimate H for a given Q
+            # so
             # Q = C * L * H^(3/2)  =>  H = (Q / (C * L))^(2/3)
             # Assuming C ~ 1.8 (SI) or 3.3 (Imperial)? 
             # The hydraulics module likely has a function for this.
@@ -822,7 +825,6 @@ class Dam:
             gdf_upstream = xs_gdf.iloc[[0]]
             gdf_downstream = xs_gdf.iloc[1:]
 
-        # strm_gdf.plot(ax=ax, color='green', markersize=100, edgecolor='black', zorder=2, label="Flowline")
         gdf_upstream.plot(ax=ax, color='red', markersize=100, edgecolor='black', zorder=2, label="Upstream")
         gdf_downstream.plot(ax=ax, color='dodgerblue', markersize=100, edgecolor='black', zorder=2, label="Downstream")
 

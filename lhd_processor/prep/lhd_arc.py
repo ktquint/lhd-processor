@@ -420,6 +420,17 @@ class ArcDam:
              print(f"  ⚠️ Skipping Dam {self.dam_id}: Stream file path is None or file does not exist.")
              return
 
+        # Validate Stream Raster
+        try:
+            ds = gdal.Open(str(self.strm_tif_clean), gdal.GA_ReadOnly)
+            if ds is None:
+                print(f"  ⚠️ Skipping Dam {self.dam_id}: Stream file is invalid (GDAL cannot open).")
+                return
+            del ds
+        except Exception as e:
+            print(f"  ⚠️ Skipping Dam {self.dam_id}: Stream file is corrupted. {e}")
+            return
+
         # Ensure output_dir is a Path
         if not isinstance(self.output_dir, Path):
             self.output_dir = Path(self.output_dir)
@@ -430,6 +441,17 @@ class ArcDam:
 
         if not self.dem_path or not self.dem_path.exists():
             print(f"  ❌ DEM not found: {self.dem_path}")
+            return
+
+        # Validate DEM
+        try:
+            ds = gdal.Open(str(self.dem_path), gdal.GA_ReadOnly)
+            if ds is None:
+                print(f"  ❌ DEM invalid (GDAL cannot open): {self.dem_path}")
+                return
+            del ds
+        except Exception as e:
+            print(f"  ❌ DEM corrupted: {self.dem_path} - {e}")
             return
 
         print(f"  Processing DEM: {self.dem_path.name}")
