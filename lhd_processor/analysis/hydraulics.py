@@ -470,6 +470,12 @@ def calc_y2_simp(H_input, P_input):
     
     return (y_1/2) * (-1 + np.sqrt(1 + 8 * Fr_1**2))
 
+def calc_y2_Hassanpour(H_input, P_input):
+    """
+        Calculates y2 based on the provided empirical formula from Hassanpour
+        Y_2 = (Y_1) * (0.832 * Fr1) + (1.998 * B) - (1.250 * (r / y1)) + 0.432
+    """
+
 
 def calc_yFlip_simp(H_input, P_input):
     if P_input == -9999 or H_input == -9999: return -9999
