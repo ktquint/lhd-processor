@@ -478,6 +478,7 @@ def calc_y2_Hassanpour(H_input, P_input):
         On 2/27/26, assumes:
         B = 1
         R = 0
+
     """
     if P_input == -9999 or H_input == -9999: return -9999
 
