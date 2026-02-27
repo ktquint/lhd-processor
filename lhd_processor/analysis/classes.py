@@ -24,7 +24,8 @@ from .hydraulics import (solve_weir_geom,
                          rating_curve_intercepts_simp,
                          rating_curve_intercept_adv,
                          calc_froude_custom,
-                         solve_Fr_simp)
+                         solve_Fr_simp,
+                         calc_y2_Hassanpour)
 
 from .utils import (merge_arc_results,
                     merge_databases,
