@@ -103,7 +103,7 @@ def threaded_analysis(mode, params):
             messagebox.showwarning("No Data", "No processed dams found in the specified Results folder.")
             return
 
-        worker_count = 2
+        worker_count = 3
         with LocalCluster(n_workers=worker_count, threads_per_worker=1) as cluster:
             with Client(cluster) as client:
                 utils.set_status(f"Parallelizing analysis across {worker_count} workers...")
