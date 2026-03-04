@@ -470,7 +470,7 @@ def calc_y2_simp(H_input, P_input):
     
     return (y_1/2) * (-1 + np.sqrt(1 + 8 * Fr_1**2))
 
-def calc_y2_Hassanpour(y1, Fr1, width, L):
+def calc_y2_Hassanpour(y1, Fr1):
     """
         Calculates y2 based on the provided empirical formula from Hassanpour
         Y_2 = (Y_1) * ((0.832 * Fr1) + (1.998 * B) - (1.250 * (R / y1)) + 0.432)
@@ -485,7 +485,7 @@ def calc_y2_Hassanpour(y1, Fr1, width, L):
     y_1 = y1
     Fr_1 = Fr1
     r = 0
-    B = L/width
+    B = 1
 
     return (y_1) * ((0.832 * Fr_1) + (1.998 * B) - (1.250 * (r / y_1)) + 0.432)
 
