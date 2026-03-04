@@ -722,7 +722,7 @@ class Dam:
                             if self.calc_mode == "Advanced":
                                 y_1_curr = solve_y1_adv(Q, xs.L, H_current, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
                                 Fr_1 = calc_froude_custom(Q, y_1_curr, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
-                                y_2 = calc_y2_Hassanpour(y_1_curr, Fr_1, (xs.tw_a * Q ** xs.tw_b), xs.L)
+                                y_2 = calc_y2_Hassanpour(y_1_curr, Fr_1, 1, 1)
                             else:
                                 y_1_curr = solve_y1_simp(H_current, xs.P)
                                 y_2 = calc_y2_simp(H_current, xs.P)
