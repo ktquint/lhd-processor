@@ -725,8 +725,8 @@ class Dam:
                                 y_2 = calc_y2_Hassanpour(y_1_curr, Fr_1)
                             else:
                                 y_1_curr = solve_y1_simp(H_current, xs.P)
-                                y_2 = calc_y2_simp(H_current, xs.P)
                                 Fr_1 = solve_Fr_simp(H_current, xs.P)
+                                y_2 = calc_y2_Hassanpour(y_1_curr, Fr_1)
 
 
                             y_flip = compute_y_flip(Q, xs.L, xs.P)
