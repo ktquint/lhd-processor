@@ -25,7 +25,8 @@ from .hydraulics import (solve_weir_geom,
                          rating_curve_intercept_adv,
                          calc_froude_custom,
                          solve_Fr_simp,
-                         calc_y2_Hassanpour)
+                         calc_y2_Hassanpour,
+                         get_top_width)
 
 from .utils import (merge_arc_results,
                     merge_databases,
@@ -724,9 +725,10 @@ class Dam:
                                 Fr_1 = calc_froude_custom(Q, y_1_curr, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
                                 y_2 = calc_y2_Hassanpour(y_1_curr, Fr_1)
                             else:
+                                get_top_width
                                 y_1_curr = solve_y1_simp(H_current, xs.P)
                                 Fr_1 = solve_Fr_simp(H_current, xs.P)
-                                y_2 = calc_y2_Hassanpour(H_current, xs.P)
+                                y_2 = calc_y2_Hassanpour(H_current, xs.P, xs.tw_a, xs.tw_b, Q, xs.L)
 
 
                             y_flip = compute_y_flip(Q, xs.L, xs.P)

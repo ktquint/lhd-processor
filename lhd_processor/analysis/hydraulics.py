@@ -470,7 +470,7 @@ def calc_y2_simp(H_input, P_input):
     
     return (y_1/2) * (-1 + np.sqrt(1 + 8 * Fr_1**2))
 
-def calc_y2_Hassanpour(H_input, P_input):
+def calc_y2_Hassanpour(H_input, P_input, a, b, Q, L):
     """
         Calculates y2 based on the provided empirical formula from Hassanpour
         Y_2 = (Y_1) * ((0.832 * Fr1) + (1.998 * B) - (1.250 * (R / y1)) + 0.432)
@@ -478,6 +478,8 @@ def calc_y2_Hassanpour(H_input, P_input):
         On 2/27/26, assumes:
         B = 1
         R = 0
+
+        3/4/2026, trying to figure out B ratio
     """
 
     if P_input == -9999 or H_input == -9999:
@@ -485,7 +487,8 @@ def calc_y2_Hassanpour(H_input, P_input):
 
     y_1 = solve_y1_simp(H_input, P_input)
     Fr_1 = solve_Fr_simp(H_input, P_input)
-    B = 1
+    tw = (a * (Q ** b))
+    B = L/tw
     R = 0
 
     return (y_1 * ((0.832 * Fr_1)+(1.998 * B) - (1.250 * (R/y_1)) + 0.432))
