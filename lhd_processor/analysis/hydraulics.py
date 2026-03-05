@@ -489,7 +489,7 @@ def calc_y2_Hassanpour(H_input, P_input, a, b, Q, L):
     Fr_1 = solve_Fr_simp(H_input, P_input)
     tw = (a * (Q ** b))
     B = L/tw
-    R = 0.01
+    R = 0.03
 
     return (y_1 * ((0.832 * Fr_1)+(1.998 * B) - (1.250 * (R/y_1)) + 0.432))
 
