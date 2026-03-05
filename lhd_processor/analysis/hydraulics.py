@@ -493,7 +493,7 @@ def calc_y2_Hassanpour_simp(H_input, P_input, a, b, Q, L):
 
     return (y_1 * ((0.832 * Fr_1)+(1.998 * B) - (1.250 * (R/y_1)) + 0.432))
 
-def calc_y2_Hassanpour_adv(y1, Fr1, a, b, Q, L):
+def calc_y2_Hassanpour_adv(Q, L, H, P, y1_shifted, y2_shifted, dist, a, b):
     """
         Calculates y2 based on the provided empirical formula from Hassanpour
         Y_2 = (Y_1) * ((0.832 * Fr1) + (1.998 * B) - (1.250 * (R / y1)) + 0.432)
@@ -508,8 +508,8 @@ def calc_y2_Hassanpour_adv(y1, Fr1, a, b, Q, L):
     if P_input == -9999 or H_input == -9999:
         return -9999
 
-    y_1 = y1
-    Fr_1 = Fr1
+    y_1 = solve_y1_adv(Q, L, H, P, y1_shifted, y2_shifted, dist)
+    Fr_1 = calc_froude_custom(Q, y_1, y1_shifted, y2_shifted, dist)
     tw = (a * (Q ** b))
     B = 1
     R = 0.0
