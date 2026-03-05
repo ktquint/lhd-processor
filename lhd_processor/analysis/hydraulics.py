@@ -508,11 +508,11 @@ def calc_y2_Hassanpour_adv(y1, Fr1, a, b, Q, L):
     if P_input == -9999 or H_input == -9999:
         return -9999
 
-    y_1 = solve_y1_simp(H_input, P_input)
-    Fr_1 = solve_Fr_simp(H_input, P_input)
+    y_1 = y1
+    Fr_1 = Fr1
     tw = (a * (Q ** b))
-    B = L/tw
-    R = 0.03
+    B = 1
+    R = 0.0
 
     return (y_1 * ((0.832 * Fr_1)+(1.998 * B) - (1.250 * (R/y_1)) + 0.432))
 
