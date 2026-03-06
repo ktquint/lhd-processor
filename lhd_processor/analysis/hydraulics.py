@@ -500,3 +500,32 @@ def rating_curve_intercepts_simp(L_input: float, P_input: float, a: float, b: fl
     Q_max = _solve_intersection(lambda q: residual(q, 'flip'), Q_min_search, Q_max_search, Q_max_search)
         
     return Q_min, Q_max
+
+
+def drop_number(Q, L, h_0):
+    g = 9.81  # m/s^2
+    if h_0 <= 0:
+        raise ValueError("h_0 must be greater than 0")
+    q = Q / L  # L is length of weir
+
+    return (q ** 2) / (g * h_0 ** 3)
+
+
+def specific_energy_loss(Q, L, h_0, P, y_2):
+    # compute drop number
+    D = drop_number(Q, L, h_0)
+
+    if D > 0.5:  # above that, flow transitions toward supercritical
+        print("Warning: drop number outside validated range (D>0.5).")
+
+    # coefficients
+    C_e1 = -3.5 * D + 1
+    C_e2 = -28.8 * D ** 2 + 18.6 * D - 2
+
+    # upstream specific energy
+    E_0 = P + h_0
+
+    # energy loss
+    E_delta = (C_e1 * (y_2 / h_0) + C_e2) * E_0
+
+    return max(E_delta, 0.0)

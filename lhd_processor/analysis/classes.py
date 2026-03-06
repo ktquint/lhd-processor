@@ -24,7 +24,9 @@ from .hydraulics import (solve_weir_geom,
                          rating_curve_intercepts_simp,
                          rating_curve_intercept_adv,
                          calc_froude_custom,
-                         solve_Fr_simp)
+                         solve_Fr_simp,
+                         drop_number,
+                         specific_energy_loss)
 
 from .utils import (merge_arc_results,
                     merge_databases,
@@ -403,6 +405,9 @@ class CrossSection:
             
             if self.calc_mode == "Advanced":
                 Y_Conj2 = solve_y2_adv(Q, self.L, H_current, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
+            elif self.calc_mode== "SpecificEnergyLoss":
+                D=drop_number(Q, self.L, H_current)
+                E_loss=specific_energy_loss(Q, self.L, H_current, self.P, self.y_2_shifted)
             else:
                 Y_Conj2 = calc_y2_simp(H_current, self.P)
 
@@ -445,15 +450,25 @@ class CrossSection:
 
     def get_dangerous_flow_range(self):
         if self.calc_mode == "Advanced":
-            return rating_curve_intercept_adv(self.L, self.P, self.a, self.b,
-                                              self.y_1_shifted, self.y_2_shifted, self.dist,
-                                              self.Qmin, self.Qmax)
+            return rating_curve_intercept_adv(
+                self.L, self.P, self.a, self.b,
+                self.y_1_shifted, self.y_2_shifted, self.dist,
+                self.Qmin, self.Qmax
+            )
+
         elif self.calc_mode == "Simplified":
-            return rating_curve_intercepts_simp(self.L, self.P, self.a, self.b,
-                                                self.Qmin, self.Qmax)
+            return rating_curve_intercepts_simp(
+                self.L, self.P, self.a, self.b,
+                self.Qmin, self.Qmax
+            )
+
+        elif self.calc_mode == "SpecificEnergyLoss":
+            # You need to decide what "dangerous flow range" means for your method.
+            # For now, you might return None or compute something meaningful.
+            return None  # placeholder until you define your logic
+
         else:
             return None
-
 
     def plot_fdc(self, ax: Axes):
         flow_data = self.parent_dam.flow_series
@@ -741,6 +756,8 @@ class Dam:
                                 'y_2': y_2,
                                 'Fr_1': Fr_1,
                                 'jump_type': jump,
+                                'drop_number':D,
+                                'specific_energy_loss': E_delta
                             })
                         except:
                             pass

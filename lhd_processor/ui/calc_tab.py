@@ -53,7 +53,8 @@ def setup_calc_tab(parent_tab):
                     variable=calc_mode_var, value="Advanced").pack(side="left", padx=(0, 10))
     ttk.Radiobutton(mode_frame, text="Simplified",
                     variable=calc_mode_var, value="Simplified").pack(side="left")
-
+    ttk.Radiobutton(mode_frame, text="SpecificEnergyLoss",
+                    variable=calc_mode_var, value="SpecificEnergyLoss").pack(side="left", padx=(0, 10))
     # Row 4: Results Folder
     ttk.Label(path_frame, text="Results Folder:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
     res_entry = ttk.Entry(path_frame)
@@ -103,7 +104,7 @@ def threaded_analysis(mode, params):
             messagebox.showwarning("No Data", "No processed dams found in the specified Results folder.")
             return
 
-        worker_count = 2
+        worker_count = 3
         with LocalCluster(n_workers=worker_count, threads_per_worker=1) as cluster:
             with Client(cluster) as client:
                 utils.set_status(f"Parallelizing analysis across {worker_count} workers...")
