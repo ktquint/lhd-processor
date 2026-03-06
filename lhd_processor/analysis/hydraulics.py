@@ -470,6 +470,29 @@ def calc_y2_simp(H_input, P_input):
     
     return (y_1/2) * (-1 + np.sqrt(1 + 8 * Fr_1**2))
 
+def calc_y2_Gupta_simp(H_input, P_input, a, b, Q, L, S):
+    """
+        Calculates y2 based on the provided empirical formula from Hassanpour
+        Y_2 = (Y_1) * ((0.832 * Fr1) + (1.998 * B) - (1.250 * (R / y1)) + 0.432)
+
+        On 2/27/26, assumes:
+        B = 1
+        R = 0
+
+        3/4/2026, trying to figure out B ratio
+    """
+
+    if P_input == -9999 or H_input == -9999:
+        return -9999
+
+    y_1 = solve_y1_simp(H_input, P_input)
+    Fr_1 = solve_Fr_simp(H_input, P_input)
+    tw = (a * (Q ** b))
+    B = L/tw
+    R = 0.00
+
+    return (y_1 * ((1.39 * (Fr_1 ** 0.92)) + (24 * S) + (1.825 * B) + 0.047))
+
 def calc_y2_Hassanpour_simp(H_input, P_input, a, b, Q, L):
     """
         Calculates y2 based on the provided empirical formula from Hassanpour

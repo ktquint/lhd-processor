@@ -728,7 +728,7 @@ class Dam:
                             else:
                                 y_1_curr = solve_y1_simp(H_current, xs.P)
                                 Fr_1 = solve_Fr_simp(H_current, xs.P)
-                                y_2 = calc_y2_Hassanpour_simp(H_current, xs.P, xs.tw_a, xs.tw_b, Q, xs.L)
+                                y_2 = calc_y2_Gupta_simp(H_current, xs.P, xs.tw_a, xs.tw_b, Q, xs.L, xs.slope)
 
 
 
