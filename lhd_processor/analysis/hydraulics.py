@@ -487,7 +487,7 @@ def calc_y2_Eltoukhy_simp(H_input, P_input, S):
 
     y_1 = solve_y1_simp(H_input, P_input)
     Fr_1 = solve_Fr_simp(H_input, P_input)
-    ratio = (-0.02*(((Fr_1 ** 2)*(S ** 0.5))^2)) + (0.898*(((Fr_1 ** 2)*(S ** 0.5)))) + 2.03
+    ratio = (-0.02*(((Fr_1 ** 2)*(S ** 0.5)) ** 2)) + (0.898*(((Fr_1 ** 2)*(S ** 0.5)))) + 2.03
 
     return ratio * y_1
 
