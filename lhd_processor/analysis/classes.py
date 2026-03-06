@@ -157,7 +157,7 @@ class CrossSection:
             self.Qmin = 0.0
             self.Qmax = 100.0
             
-        self.slope = round_sigfig(xs_row['Slope'], 3)
+        self.slope = round_sigfig(xs_row['Slope'], 12)
 
     def _init_geometry(self, xs_row):
         # cross-section plot info
