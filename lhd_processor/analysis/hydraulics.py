@@ -488,7 +488,7 @@ def calc_y2_Gupta_simp(H_input, P_input, a, b, Q, L, S):
     y_1 = solve_y1_simp(H_input, P_input)
     Fr_1 = solve_Fr_simp(H_input, P_input)
     tw = (a * (Q ** b))
-    B = L/tw
+    B = 1
     R = 0.00
 
     return (y_1 * ((1.39 * (Fr_1 ** 0.92)) + (24 * S) + (1.825 * B) + 0.047))
