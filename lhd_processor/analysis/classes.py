@@ -27,7 +27,8 @@ from .hydraulics import (solve_weir_geom,
                          solve_Fr_simp,
                          calc_y2_Hassanpour_adv,
                          calc_y2_Hassanpour_simp,
-                         get_top_width)
+                         get_top_width,
+                         calc_y2_Gupta_simp)
 
 from .utils import (merge_arc_results,
                     merge_databases,
