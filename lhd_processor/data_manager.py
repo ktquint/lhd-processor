@@ -317,7 +317,7 @@ class DatabaseManager:
 
             current_res = current_res[current_res['site_id'] != site_id]
 
-            if hydraulic_data:
+            if hydraulic_data is not None:
 
                 new_res = pd.DataFrame(hydraulic_data)
 
@@ -328,3 +328,4 @@ class DatabaseManager:
                 current_res = self._safe_concat([current_res, new_res], self.results_schema)
 
             self.results[res_sheet] = current_res
+
