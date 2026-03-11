@@ -153,7 +153,7 @@ class DatabaseManager:
 
             try:
 
-                with pd.ExcelWriter(self.filepath, engine='openpyxl', mode='w') as writer:
+                with pd.ExcelWriter(self.filepath, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
 
                     self.sites.to_excel(writer, sheet_name='Sites', index=False)
                     self.incidents.to_excel(writer, sheet_name='Incidents', index=False)

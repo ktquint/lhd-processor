@@ -301,7 +301,7 @@ class LowHeadDam:
 
             flow_val = self.get_streamflow(incident_date, source=source)
 
-            if flow_val is not None:
+            if flow_val:
                 self.incidents_df.at[idx, flow_col] = float(flow_val)
             else:
                 print(f"Warning: Could not find {source} flow for Dam {self.site_id} on {incident_date}")
