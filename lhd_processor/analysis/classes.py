@@ -15,15 +15,13 @@ from matplotlib_scalebar.scalebar import ScaleBar
 
 # Internal imports
 from .hydraulics import (solve_weir_geom,
-                         solve_y2_adv,
                          calc_y2_simp,
+                         calc_y2_adv,
                          weir_H_simp,
                          compute_y_flip,
-                         solve_y1_adv,
-                         solve_y1_simp,
+                         solve_y1,
                          rating_curve_intercepts_simp,
                          rating_curve_intercept_adv,
-                         calc_froude_custom,
                          solve_Fr_simp)
 
 from .utils import (merge_arc_results,
@@ -400,9 +398,10 @@ class CrossSection:
             # weir_H_simp(Q, L) is available.
             
             H_current = weir_H_simp(Q, self.L)
-            
+            Y_Conj1 = solve_y1(H_current, self.P)
+
             if self.calc_mode == "Advanced":
-                Y_Conj2 = solve_y2_adv(Q, self.L, H_current, self.P, self.y_1_shifted, self.y_2_shifted, self.dist)
+                Y_Conj2 = calc_y2_adv(Q, Y_Conj1, self.L, self.y_1_shifted, self.y_2_shifted, self.dist)
             else:
                 Y_Conj2 = calc_y2_simp(H_current, self.P)
 
@@ -665,11 +664,7 @@ class Dam:
                                                y_i, delta_wse)
 
                     # solve for y_1 to see if the weir is drowned
-                    if self.calc_mode == "Advanced":
-                        y_1 = solve_y1_adv(self.baseflow, self.weir_length, H_i, P_i,
-                                           xs.y_1_shifted, xs.y_2_shifted, xs.dist)
-                    else: # self.calc_mode == "Simplified":
-                        y_1 = solve_y1_simp(H_i, P_i)
+                    y_1 = solve_y1(H_i, P_i)
                     if y_1 > P_i:
                         print(f"Warning: Dam {self.id} XS {i} appears drowned.")
 
@@ -717,15 +712,14 @@ class Dam:
                             
                             # Recalculate H for this Q
                             H_current = weir_H_simp(Q, xs.L)
+                            y_1_curr = solve_y1(H_current, xs.P)
                             
                             if self.calc_mode == "Advanced":
-                                y_1_curr = solve_y1_adv(Q, xs.L, H_current, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
-                                y_2 = solve_y2_adv(Q, xs.L, H_current, xs.P, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
-                                Fr_1 = calc_froude_custom(Q, y_1_curr, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                                y_2 = calc_y2_adv(Q, y_1_curr, xs.L, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
                             else:
-                                y_1_curr = solve_y1_simp(H_current, xs.P)
                                 y_2 = calc_y2_simp(H_current, xs.P)
-                                Fr_1 = solve_Fr_simp(H_current, xs.P)
+
+                            Fr_1 = solve_Fr_simp(H_current, xs.P)
 
 
                             y_flip = compute_y_flip(Q, xs.L, xs.P)

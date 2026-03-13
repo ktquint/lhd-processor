@@ -12,7 +12,9 @@ C_W = 0.62
 
 
 def weir_coef_adv(H_input, P_input):
-    if P_input == -9999: return -9999
+    if P_input == -9999:
+        return -9999
+    
     return 0.611 + 0.075 * H_input/P_input
 
 
@@ -23,13 +25,11 @@ def solve_yc(Q, xs1, xs2, dist):
         """
 
     def fr_residual(y):
-        # We want Froude - 1 = 0
         return calc_froude_custom(Q, y, xs1, xs2, dist) - 1.0
 
     try:
-        # Critical depth for most rivers is between 1cm and 10m.
         # brentq is extremely reliable if the signs at the bounds differ.
-        sol = root_scalar(fr_residual, bracket=(0.01, 10.0), method='brentq')
+        sol = root_scalar(fr_residual, bracket=(1e-4, 30.0), method='brentq')
         return sol.root
     except ValueError:
         # Fallback if the range is weird
@@ -164,69 +164,10 @@ def calc_froude_custom(Q, y, xs1, xs2, dist):
     return V / np.sqrt(g * D)
 
 
-def solve_y1_adv(Q, L, H, P, xs1, xs2, dist):
-    """
-    Robustly solves for the supercritical toe depth (y1) using Specific Energy.
-    Uses critical depth as a physical boundary for the root search.
-    """
-    if P == -9999: return -9999
-    if H <= 0: return 0.0
-
-    # 1. Calculate Available Total Energy (Bernoulli)
-    A_o = L * H
-    V_o = Q / A_o
-    hv_o = (V_o**2) / (2 * g) # velocity head
-    E_total = P + H + hv_o
-
-    # 2. Define Residual Function (E_calc - E_total)
-    def energy_residual(y):
-        if y <= 0: return 1e9
-        A, _ = get_xs_props(y, xs1, xs2, dist)
-        if A <= 0: return 1e9
-
-        T_current = get_top_width(y, xs1, xs2, dist)
-
-        if T_current > L:
-            K = 0.3
-        else:
-            K = 0.1
-
-        # calculate downstream velocity head
-        V_1 = Q / A
-        hv_1 = (V_1**2) / (2 * g)
-
-        # add loss to specific energy
-        h_loss = K * abs(hv_1 - hv_o)
-        E_calc = y + hv_1 + h_loss
-        return E_calc - E_total
-
-    # 3. Establish the Search Bracket
-    # Critical depth (yc) is the depth of minimum energy.
-    # Supercritical flow (y1) MUST occur at a depth less than yc.
-    y_c = solve_yc(Q, xs1, xs2, dist)
-
-    # We use a small epsilon (0.0001) instead of 0 to avoid division by zero.
-    low_bound = 0.0001
-    high_bound = y_c
-
-    # 4. Verify signs and Solve
-    # At very small depths, Velocity Head is massive, so E_calc > E_total (Residual is Positive).
-    # At critical depth, Energy is at its minimum, so E_calc < E_total (Residual is Negative).
-    if energy_residual(low_bound) > 0 > energy_residual(high_bound):
-        try:
-            sol = root_scalar(energy_residual, bracket=(low_bound, high_bound), method='brentq')
-            return sol.root
-        except ValueError:
-            return 0.1  # Fallback for convergence issues
-    else:
-        # If the residual at y_c is still positive, E_total is less than the
-        # minimum energy required to pass the flow. This indicates "choked" flow.
-        return y_c
-
-
-def solve_y2_jump(Q, y1, xs1, xs2, dist):
+def calc_y2_adv(Q, y1, L, xs1, xs2, dist):
     # 1. Calculate Momentum at y1 (Supercritical side)
-    A1, y_cj1 = get_xs_props(y1, xs1, xs2, dist)
+    A1 = y1 * L
+    y_cj1 = y1/2
 
     # Safety check for bad y1
     if A1 <= 0.0001: return 0.0
@@ -265,17 +206,6 @@ def solve_y2_jump(Q, y1, xs1, xs2, dist):
 
     except ValueError:
         return 0.0
-
-
-def solve_y2_adv(Q, L, H, P, xs1, xs2, dist):
-    """
-    Solves for the sequent depth (y2) directly from Q, L, P.
-    Internally calls solve_y1_adv first.
-    """
-    if P == -9999: return -9999
-
-    y_1 = solve_y1_adv(Q, L, H, P, xs1, xs2, dist)
-    return solve_y2_jump(Q, y_1, xs1, xs2, dist)
 
 
 def Fr_eq(Fr, x):
@@ -364,11 +294,12 @@ def rating_curve_intercept_adv(L: float, P: float, a: float, b: float,
         
         y_t = a * Q ** b
         H = weir_H_simp(Q, L)
+        y1 = solve_y1(H, P)
         
         if which == 'flip':
             y_target = compute_y_flip(Q, L, P)
         elif which == 'conjugate':
-            y_target = solve_y2_adv(Q, L, H, P, xs1, xs2, dist)
+            y_target = calc_y2_adv(Q, y1, L, xs1, xs2, dist)
         else:
             return 1e6
             
@@ -400,7 +331,7 @@ def solve_weir_geom(Q_input, L_input, YT_input, Wse_input):
 
 # Simplified Calculations
 
-def solve_y1_simp(H_input, P_input):
+def solve_y1(H_input, P_input):
     """
         solves the polynomial
         (Y_1/H)**3 - (1 + P/H) * (Y_1/H)**2 + 4/9 * C_W**2 * (1 + C_L) = 0
@@ -465,7 +396,7 @@ def calc_y2_simp(H_input, P_input):
     """
     if P_input == -9999 or H_input == -9999: return -9999
 
-    y_1 = solve_y1_simp(H_input, P_input)
+    y_1 = solve_y1(H_input, P_input)
     Fr_1 = solve_Fr_simp(H_input, P_input)
     
     return (y_1/2) * (-1 + np.sqrt(1 + 8 * Fr_1**2))
