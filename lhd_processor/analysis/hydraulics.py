@@ -560,7 +560,7 @@ def calc_y2_Hassanpour_adv(Q, L, H, P, y1_shifted, y2_shifted, dist, a, b):
 
     return (y_1 * ((0.832 * Fr_1)+(1.998 * B) - (1.250 * (R/y_1)) + 0.432))
 
-def calc_y2_Carollo_simp(H_input,P_input)
+def calc_y2_Carollo_simp(H_input,P_input):
 
     if P_input == -9999 or H_input == -9999:
         return -9999
