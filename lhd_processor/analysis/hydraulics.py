@@ -560,6 +560,22 @@ def calc_y2_Hassanpour_adv(Q, L, H, P, y1_shifted, y2_shifted, dist, a, b):
 
     return (y_1 * ((0.832 * Fr_1)+(1.998 * B) - (1.250 * (R/y_1)) + 0.432))
 
+def calc_y2_Carollo_simp(H_input,P_input)
+
+    if P_input == -9999 or H_input == -9999:
+        return -9999
+
+    y_1 = solve_y1_simp(H_input, P_input)
+    Fr_1 = solve_Fr_simp(H_input, P_input)
+
+    if Fr_1 <= 1:
+        return -9999
+
+    ratio = (2 ** (1/2)) * (((Fr_1)-1) ** 0.963) + 1
+
+    return ratio * y_1
+
+
 def calc_yFlip_simp(H_input, P_input):
     if P_input == -9999 or H_input == -9999: return -9999
     return (H_input + P_input) / 1.1

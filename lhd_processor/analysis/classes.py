@@ -29,7 +29,8 @@ from .hydraulics import (solve_weir_geom,
                          calc_y2_Hassanpour_simp,
                          get_top_width,
                          calc_y2_Eltoukhy_simp,
-                         calc_y2_Gupta_simp)
+                         calc_y2_Gupta_simp,
+                         calc_y2_Carollo_simp)
 
 from .utils import (merge_arc_results,
                     merge_databases,
@@ -730,7 +731,7 @@ class Dam:
                             else:
                                 y_1_curr = solve_y1_simp(H_current, xs.P)
                                 Fr_1 = solve_Fr_simp(H_current, xs.P)
-                                y_2 = calc_y2_Eltoukhy_simp(H_current, xs.P, xs.slope)
+                                y_2 = calc_y2_Carollo_simp(H_current, xs.P)
 
                             y_flip = compute_y_flip(Q, xs.L, xs.P)
                             jump = hydraulic_jump_type(y_2, y_t, y_flip)
