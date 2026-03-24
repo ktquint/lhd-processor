@@ -39,7 +39,7 @@ class DatabaseManager:
         self.results_schema = [
             'site_id', 'date', 'xs_index',
             'y_t', 'y_flip', 'y_2', 'jump_type',
-            'y_1', 'Fr_1'
+            'y_1', 'Fr_1', 'm1', 'm2'
         ]
 
         # Abbreviation map for sheet names

@@ -18,7 +18,8 @@ from .hydraulics import (solve_weir_geom,
                          calc_y2_simp,
                          calc_y2_adv,
                          weir_H_simp,
-                         compute_y_flip,
+                         compute_y_flip_simp,
+                         compute_y_flip_adv,
                          solve_y1,
                          rating_curve_intercepts_simp,
                          rating_curve_intercept_adv,
@@ -383,26 +384,17 @@ class CrossSection:
         Y_Conjugates = []
 
         for i, Q in enumerate(Qs):
-            Y_Flip = compute_y_flip(Q, self.L, self.P)
-            # Use shifted profiles
-            # Recalculate H for this Q
-            # NOTE: This assumes H varies with Q, which it does (H = (Q/CL)^(2/3))
-            # The stored self.H is only for baseflow conditions!
-            # We need to calculate H for the current Q to get the correct sequent depth.
-            
-            # Using simplified weir equation to estimate H for a given Q
-            # so
-            # Q = C * L * H^(3/2)  =>  H = (Q / (C * L))^(2/3)
-            # Assuming C ~ 1.8 (SI) or 3.3 (Imperial)? 
-            # The hydraulics module likely has a function for this.
-            # weir_H_simp(Q, L) is available.
+
+
             
             H_current = weir_H_simp(Q, self.L)
             Y_Conj1 = solve_y1(H_current, self.P)
 
             if self.calc_mode == "Advanced":
+                Y_Flip = compute_y_flip_adv(Q, self.L, self.P)
                 Y_Conj2 = calc_y2_adv(Q, Y_Conj1, self.L, self.y_1_shifted, self.y_2_shifted, self.dist)
             else:
+                Y_Flip = compute_y_flip_simp(Q, self.L, self.P)
                 Y_Conj2 = calc_y2_simp(H_current, self.P)
 
             Y_Flips.append(Y_Flip)
@@ -715,14 +707,22 @@ class Dam:
                             y_1_curr = solve_y1(H_current, xs.P)
                             
                             if self.calc_mode == "Advanced":
-                                y_2 = calc_y2_adv(Q, y_1_curr, xs.L, xs.y_1_shifted, xs.y_2_shifted, xs.dist)
+                                y_flip = compute_y_flip_adv(Q, xs.L, xs.P)
+                                y_2_sol = calc_y2_adv(Q, y_1_curr, xs.L, xs.y_1_shifted, xs.y_2_shifted, xs.dist, return_momentum=True)
+                                if isinstance(y_2_sol, tuple):
+                                    y_2, m1, m2 = y_2_sol
+                                else:
+                                    y_2 = y_2_sol
+                                    m1 = None
+                                    m2 = None
                             else:
+                                y_flip = compute_y_flip_simp(Q, xs.L, xs.P)
                                 y_2 = calc_y2_simp(H_current, xs.P)
+                                m1 = None
+                                m2 = None
 
                             Fr_1 = solve_Fr_simp(H_current, xs.P)
 
-
-                            y_flip = compute_y_flip(Q, xs.L, xs.P)
                             jump = hydraulic_jump_type(y_2, y_t, y_flip)
                             hydro_results_list.append({
                                 'site_id': self.id,
@@ -734,6 +734,8 @@ class Dam:
                                 'y_2': y_2,
                                 'Fr_1': Fr_1,
                                 'jump_type': jump,
+                                'm1': m1,
+                                'm2': m2
                             })
                         except:
                             pass

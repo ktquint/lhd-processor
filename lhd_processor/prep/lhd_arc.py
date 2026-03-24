@@ -89,6 +89,7 @@ class ArcDam:
         self.flowline_source = flowline_source
         self.streamflow_source = streamflow_source
         self.baseflow_method = baseflow_method
+        self.ep_value = dam_row.get('ep_value')
 
         # ARC specific defaults
         self.create_reach_average_curve_file = 'False'
@@ -469,6 +470,15 @@ class ArcDam:
                 Q_baseflow = "known_baseflow"
             elif self.baseflow_method == "WSE and Median Daily Flow":
                 Q_baseflow = "qout_median"
+            elif self.baseflow_method == "WSE and Exceedance Probability":
+                if self.ep_value is not None:
+                    # Make sure ep_value is multiple of 10s
+                    ep_rounded = int(round(self.ep_value / 10.0)) * 10
+                    # Handle boundaries
+                    ep_rounded = max(10, min(100, ep_rounded))
+                    Q_baseflow = f"q_ep_{ep_rounded}"
+                else:
+                    Q_baseflow = "q_ep_50" # Fallback if None
             else:
                 Q_baseflow = "rp2"
             self._create_arc_input_txt(Q_baseflow, "rp100")

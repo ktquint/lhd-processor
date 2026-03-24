@@ -20,6 +20,7 @@ arc_results_entry = None
 arc_flowline_var = None
 arc_streamflow_var = None
 arc_baseflow_var = None
+arc_ep_entry = None
 arc_manning_entry = None
 arc_run_button = None
 arc_stop_button = None
@@ -27,7 +28,7 @@ arc_stop_button = None
 stop_event = threading.Event()
 
 def setup_arc_tab(parent_tab):
-    global arc_xlsx_entry, arc_results_entry, arc_flowline_var, arc_streamflow_var, arc_baseflow_var, arc_manning_entry
+    global arc_xlsx_entry, arc_results_entry, arc_flowline_var, arc_streamflow_var, arc_baseflow_var, arc_ep_entry, arc_manning_entry
     global arc_run_button, arc_stop_button
 
     arc_frame = ttk.LabelFrame(parent_tab, text="Step 2: Automated Rating Curves")
@@ -71,10 +72,28 @@ def setup_arc_tab(parent_tab):
     bf_frame = ttk.Frame(arc_frame)
     bf_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=5)
     bf_frame.columnconfigure(1, weight=1)
+    bf_frame.columnconfigure(3, weight=1)
 
     ttk.Label(bf_frame, text="Baseflow Estimation:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
     arc_baseflow_var = tk.StringVar(value="WSE and LiDAR Date")
-    ttk.Combobox(bf_frame, textvariable=arc_baseflow_var, state="readonly", values=("WSE and LiDAR Date", "WSE and Median Daily Flow", "2-yr Flow and Bank Estimation")).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+    bf_values = ("WSE and LiDAR Date", "WSE and Median Daily Flow", "2-yr Flow and Bank Estimation", "WSE and Exceedance Probability")
+    ttk.Combobox(bf_frame, textvariable=arc_baseflow_var, state="readonly", values=bf_values).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+
+    ep_label = ttk.Label(bf_frame, text="Exceedance Probability (%):")
+    arc_ep_entry = ttk.Entry(bf_frame, width=10)
+    arc_ep_entry.insert(0, "50")
+
+    def on_bf_method_change(*args):
+        if arc_baseflow_var.get() == "WSE and Exceedance Probability":
+            ep_label.grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+            arc_ep_entry.grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
+        else:
+            ep_label.grid_remove()
+            arc_ep_entry.grid_remove()
+
+    arc_baseflow_var.trace_add("write", on_bf_method_change)
+    # Call once to set initial state
+    on_bf_method_change()
 
     # Row 4: Manning's n
     ttk.Label(arc_frame, text="Manning's n:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
@@ -128,12 +147,14 @@ def create_mannings_esa(manning_txt, manning_n_value):
         f.write(f'95\tMangroves\t{manning_n_value}\n')
         f.write(f'100\tMossLichen\t{manning_n_value}\n')
 
-def process_single_dam_arc(dam_dict, results_dir, flowline_source, streamflow_source, baseflow_method):
+def process_single_dam_arc(dam_dict, results_dir, flowline_source, streamflow_source, baseflow_method, ep_value=None):
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ['GDAL_CACHEMAX'] = '256'
 
     dam_name = dam_dict.get('name', "Unknown Dam")
     try:
+        if ep_value is not None:
+            dam_dict['ep_value'] = ep_value
         dam_i = ArcDam(dam_dict, results_dir, flowline_source, streamflow_source, baseflow_method)
         dam_i.process_dam()
         del dam_i
@@ -156,6 +177,14 @@ def threaded_run_arc():
         bf_method = arc_baseflow_var.get()
         manning_n = arc_manning_entry.get()
         
+        ep_value = None
+        if bf_method == "WSE and Exceedance Probability":
+            try:
+                ep_value = float(arc_ep_entry.get())
+            except ValueError:
+                messagebox.showerror("Error", "Invalid Exceedance Probability value.")
+                return
+
         if not os.path.exists(excel_loc):
             messagebox.showerror("Error", "Excel database not found.")
             return
@@ -187,7 +216,7 @@ def threaded_run_arc():
         with LocalCluster(processes=True, threads_per_worker=1, n_workers=worker_count) as cluster:
             with Client(cluster) as client:
                 utils.set_status(f"Processing... (Dashboard: {client.dashboard_link})")
-                futures = client.map(process_single_dam_arc, dams, results_dir=results_loc, flowline_source=fl_source, streamflow_source=sf_source, baseflow_method=bf_method)
+                futures = client.map(process_single_dam_arc, dams, results_dir=results_loc, flowline_source=fl_source, streamflow_source=sf_source, baseflow_method=bf_method, ep_value=ep_value)
 
                 processed_so_far = 0
                 for future in dask_as_completed(futures):
