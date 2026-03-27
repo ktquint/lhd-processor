@@ -18,7 +18,6 @@ from .hydraulics import (solve_weir_geom,
                          calc_y2_simp,
                          calc_y2_adv,
                          weir_H_simp,
-                         compute_y_flip_simp,
                          compute_y_flip_adv,
                          solve_y1,
                          rating_curve_intercepts_simp,
@@ -394,7 +393,7 @@ class CrossSection:
                 Y_Flip = compute_y_flip_adv(Q, self.L, self.P)
                 Y_Conj2 = calc_y2_adv(Q, Y_Conj1, self.L, self.y_1_shifted, self.y_2_shifted, self.dist)
             else:
-                Y_Flip = compute_y_flip_simp(Q, self.L, self.P)
+                Y_Flip = compute_y_flip_adv(Q, self.L, self.P)
                 Y_Conj2 = calc_y2_simp(H_current, self.P)
 
             Y_Flips.append(Y_Flip)
@@ -716,7 +715,7 @@ class Dam:
                                     m1 = None
                                     m2 = None
                             else:
-                                y_flip = compute_y_flip_simp(Q, xs.L, xs.P)
+                                y_flip = compute_y_flip_adv(Q, xs.L, xs.P)
                                 y_2 = calc_y2_simp(H_current, xs.P)
                                 m1 = None
                                 m2 = None

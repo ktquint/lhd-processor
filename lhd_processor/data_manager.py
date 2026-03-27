@@ -245,7 +245,15 @@ class DatabaseManager:
                 new_xs = self._enforce_schema(new_xs, self.xsections_schema)
                 # Ensure new_xs is not empty or all-NA before concat
                 if not new_xs.dropna(how='all').empty:
-                    current_xs = pd.concat([current_xs, new_xs], ignore_index=True)
+                    if current_xs.empty:
+                        current_xs = new_xs
+                    else:
+                        # To avoid FutureWarning, align dtypes of all-NA columns before concat.
+                        for col in new_xs.columns:
+                            if new_xs[col].dtype == 'object' and col in current_xs.columns and current_xs[col].dtype != 'object':
+                                # This handles columns added by _enforce_schema which are 'object' type
+                                new_xs[col] = new_xs[col].astype(current_xs[col].dtype)
+                        current_xs = pd.concat([current_xs, new_xs], ignore_index=True)
             
             self.xsections[xs_sheet] = current_xs
 
@@ -259,6 +267,14 @@ class DatabaseManager:
                 new_res = self._enforce_schema(new_res, self.results_schema)
                 # Ensure new_res is not empty or all-NA before concat
                 if not new_res.dropna(how='all').empty:
-                    current_res = pd.concat([current_res, new_res], ignore_index=True)
+                    if current_res.empty:
+                        current_res = new_res
+                    else:
+                        # To avoid FutureWarning, align dtypes of all-NA columns before concat.
+                        for col in new_res.columns:
+                            if new_res[col].dtype == 'object' and col in current_res.columns and current_res[col].dtype != 'object':
+                                # This handles columns added by _enforce_schema which are 'object' type
+                                new_res[col] = new_res[col].astype(current_res[col].dtype)
+                        current_res = pd.concat([current_res, new_res], ignore_index=True)
 
             self.results[res_sheet] = current_res
