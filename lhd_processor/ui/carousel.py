@@ -65,7 +65,7 @@ def on_resize(event):
         # Use tight_layout to prevent labels from being cut off at new sizes
         try:
             fig.tight_layout()
-        except:
+        except Exception:
             pass
 
         current_figure_canvas.draw_idle()

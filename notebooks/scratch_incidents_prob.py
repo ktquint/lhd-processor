@@ -126,9 +126,9 @@ def main():
                     group.at[idx, 'prob_nwm'] = prob_nwm
                     if processed_count == 0:
                         print(f"  Incident NWM Flow: {flow_val} -> Prob: {prob_nwm}%")
-                except:
-                    pass
-            
+                except (ValueError, TypeError) as e:
+                    print(f"  Could not calculate NWM probability for incident {idx}: {e}")
+
             # GEOGLOWS
             flow_geo = row.get('flow_geo')
             if pd.notna(flow_geo) and fdc_geo is not None:
@@ -136,8 +136,8 @@ def main():
                     flow_val = float(flow_geo)
                     prob_geo = get_prob_from_Q(flow_val, fdc_geo)
                     group.at[idx, 'prob_geo'] = prob_geo
-                except:
-                    pass
+                except (ValueError, TypeError) as e:
+                    print(f"  Could not calculate GEOGLOWS probability for incident {idx}: {e}")
         
         updated_incidents.append(group)
         processed_count += 1

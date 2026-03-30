@@ -64,7 +64,7 @@ def get_hydraulic_target_points(dam_row):
     # 3. Project to UTM (or planar) for accurate distance calc
     try:
         projected_crs = flowline_gdf.estimate_utm_crs()
-    except:
+    except Exception:
         # If estimation fails, this is likely where your error was happening
         # Now that PROJ is fixed, this default should work.
         projected_crs = "EPSG:3857"

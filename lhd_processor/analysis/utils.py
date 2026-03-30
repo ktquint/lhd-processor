@@ -13,7 +13,7 @@ def round_sigfig(num, sig_figs):
 
 def hydraulic_jump_type(y_2, y_t, y_flip):
     """Classifies the hydraulic jump type based on tailwater depth."""
-    if y_2 == -9999 or y_flip == -9999:
+    if y_2 == -9999 or y_flip == -9999 or y_2 <= 0:
         return 'N/A'
     if y_t < y_2:
         return 'A'
@@ -98,7 +98,7 @@ def merge_arc_results(curve_file: str, local_vdt: str, cross_section: str) -> Un
                 try:
                     val = ast.literal_eval(x)
                     return val[0] if isinstance(val, list) and len(val) > 0 else val
-                except:
+                except (ValueError, SyntaxError, IndexError):
                     pass
         return x
 

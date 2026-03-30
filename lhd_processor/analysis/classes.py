@@ -160,7 +160,7 @@ class CrossSection:
             if val_elev.startswith('[') and val_elev.endswith(']'):
                 try:
                     val_elev = ast.literal_eval(val_elev)[0]
-                except:
+                except (ValueError, SyntaxError, IndexError):
                     pass
         self.wse = float(val_elev)
         
@@ -687,8 +687,8 @@ class Dam:
                         else:
                              xs_info['prob_min'] = None
                              xs_info['prob_max'] = None
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f"Could not calc flow range for Dam {self.id} XS {export_idx}: {e}")
 
                 for _, inc_row in self.incidents_df.iterrows():
                     if self.hydrology == 'National Water Model':
@@ -736,8 +736,8 @@ class Dam:
                                 'm1': m1,
                                 'm2': m2
                             })
-                        except:
-                            pass
+                        except Exception as e:
+                            print(f"Hydraulic analysis failed for Dam {self.id} XS {export_idx} incident {date}: {e}")
             xs_data_list.append(xs_info)
         return xs_data_list, hydro_results_list
 

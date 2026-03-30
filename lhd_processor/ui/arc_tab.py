@@ -123,7 +123,7 @@ def select_arc_xlsx():
             project_path = os.path.dirname(f)
             arc_results_entry.delete(0, tk.END)
             arc_results_entry.insert(0, os.path.join(project_path, "Results"))
-        except:
+        except (OSError, AttributeError):
             pass
 
 def select_arc_results_dir():
