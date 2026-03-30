@@ -322,7 +322,10 @@ def compute_y_flip_adv(Q, L, P):
         s_limit = max(s_azimi, s_leutheusser)
 
         # 3. Use Azimi's submerged coefficient for this threshold
-        Cw_flip = np.sqrt(2 / 5) * np.sqrt(1 - s_limit ** 2)
+        if (s_limit**2) >= 1:
+            Cw_flip = np.sqrt(2/5)
+        else:
+            Cw_flip = np.sqrt(2 / 5) * np.sqrt(1 - s_limit ** 2)
 
         # 4. Check if this H satisfies the discharge Q
         Q_calc = (2 / 3) * Cw_flip * L * np.sqrt(2 * g) * (H ** 1.5)
