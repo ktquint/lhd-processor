@@ -203,7 +203,7 @@ class ArcDam:
         projected_crs = None
         try:
             projected_crs = flowline_gdf.estimate_utm_crs()
-        except:
+        except Exception:
             with rasterio.open(self.dem_path) as ds:
                 projected_crs = CRS.from_wkt(ds.crs.to_wkt())
         flowline_gdf = flowline_gdf.to_crs(projected_crs)

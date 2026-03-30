@@ -115,7 +115,7 @@ class DatabaseManager:
                 backup = self.filepath.replace('.xlsx', '_backup.xlsx')
                 try:
                     shutil.copyfile(self.filepath, backup)
-                except:
+                except OSError:
                     pass
 
             try:
@@ -136,7 +136,7 @@ class DatabaseManager:
         with self.lock:
             try:
                 site_id = int(site_id)
-            except:
+            except (ValueError, TypeError):
                 pass
             row = self.sites[self.sites['site_id'] == site_id]
             return row.iloc[0].where(pd.notnull(row.iloc[0]), None).to_dict() if not row.empty else {}
@@ -145,7 +145,7 @@ class DatabaseManager:
         with self.lock:
             try:
                 site_id = int(site_id)
-            except:
+            except (ValueError, TypeError):
                 pass
             return self.incidents[self.incidents['site_id'] == site_id].copy()
 
@@ -153,7 +153,7 @@ class DatabaseManager:
         with self.lock:
             try:
                 site_id = int(site_id)
-            except:
+            except (ValueError, TypeError):
                 pass
             
             _, res_sheet = self._get_sheet_names(flowline_source, streamflow_source)
@@ -167,7 +167,7 @@ class DatabaseManager:
         with self.lock:
             try:
                 site_id = int(site_id)
-            except:
+            except (ValueError, TypeError):
                 pass
             
             xs_sheet, _ = self._get_sheet_names(flowline_source, streamflow_source)

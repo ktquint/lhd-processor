@@ -41,14 +41,13 @@ def solve_yc(Q, xs1, xs2, dist):
             iter_count += 1
             
         if f_low * f_high > 0:
-            return 0.5
+            return None
 
         # brentq is extremely reliable if the signs at the bounds differ.
         sol = root_scalar(fr_residual, bracket=(low, high), method='brentq')
         return sol.root
     except ValueError:
-        # Fallback if the range is weird
-        return 0.5
+        return None
 
 
 def get_top_width(water_depth, xs1, xs2, dist):
@@ -172,8 +171,8 @@ def calc_y2_adv(Q, y1, L, xs1, xs2, dist, return_momentum=False):
     y_cj1 = y1/2
 
     # Safety check for bad y1
-    if A1 <= 0.0001: 
-        return (0.0, 0.0, 0.0) if return_momentum else 0.0
+    if A1 <= 0.0001:
+        return (-9999, -9999, -9999) if return_momentum else -9999
 
     M1 = (Q ** 2 / (g * A1)) + (A1 * y_cj1)
 
@@ -185,17 +184,19 @@ def calc_y2_adv(Q, y1, L, xs1, xs2, dist, return_momentum=False):
         return M_candidate - target_M
 
     yc = solve_yc(Q, xs1, xs2, dist)
-    
+    if yc is None:
+        return (-9999, M1, -9999) if return_momentum else -9999
+
     # Evaluate momentum at critical depth (minimum possible momentum)
     f_yc = momentum_residual(yc, M1)
     if f_yc > 0:
         # Minimum momentum is still > M1, no conjugate depth exists
-        return (0.0, M1, f_yc + M1) if return_momentum else 0.0
+        return (-9999, M1, -9999) if return_momentum else -9999
 
     # 2. Find a valid bracket for the Subcritical Root (y2)
     lower_bound = yc
     upper_bound = max(yc * 2.0, y1 * 2.0)
-    
+
     if upper_bound <= lower_bound:
         upper_bound = lower_bound * 2.0
 
@@ -211,40 +212,20 @@ def calc_y2_adv(Q, y1, L, xs1, xs2, dist, return_momentum=False):
 
         # If we still can't balance momentum, fail gracefully
         if f_upper < 0:
-            return (0.0, M1, f_upper + M1) if return_momentum else 0.0
+            return (-9999, M1, -9999) if return_momentum else -9999
 
         # 3. Use Brent's Method to find subcritical y2
         sol = root_scalar(momentum_residual, args=(M1,), bracket=(lower_bound, upper_bound), method='brentq')
         y2_sol = sol.root
 
-        # # 4. Find the supercritical "conjugate" depth in the custom cross-section
-        # #    This is searching for y < yc where momentum = M1
-        # alt_lower = 1e-4
-        # alt_upper = yc
-        # y_alt = y2_sol # Default to y2_sol if we can't find it
-        #
-        # f_alt_lower = momentum_residual(alt_lower, M1)
-        # f_alt_upper = momentum_residual(alt_upper, M1)
-        #
-        # if f_alt_lower * f_alt_upper < 0:
-        #     try:
-        #         sol_alt = root_scalar(momentum_residual, args=(M1,), bracket=(alt_lower, alt_upper), method='brentq')
-        #         y_alt = sol_alt.root
-        #     except ValueError:
-        #         pass
-        #
-        # # Return the minimum of the two conjugate depths found in the custom channel
-        # final_y2 = min(y2_sol, y_alt)
-        #
-        # if return_momentum:
-        #     A2, y_cj2 = get_xs_props(final_y2, xs1, xs2, dist)
-        #     M2 = (Q ** 2 / (g * A2)) + (A2 * y_cj2) if A2 > 0 else 0.0
-        #     return final_y2, M1, M2
-            
+        if return_momentum:
+            A2, y_cj2 = get_xs_props(y2_sol, xs1, xs2, dist)
+            M2 = (Q ** 2 / (g * A2)) + (A2 * y_cj2) if A2 > 0 else -9999
+            return y2_sol, M1, M2
         return y2_sol
 
     except ValueError:
-        return (0.0, M1, 0.0) if return_momentum else 0.0
+        return (-9999, M1, -9999) if return_momentum else -9999
 
 
 def Fr_eq(Fr, x):
@@ -311,6 +292,8 @@ def compute_y_flip_adv(Q, L, P):
     Solves for the specific Head (H) and Flip Depth (Y_flip) at the
     moment of transition for a given discharge Q.
     """
+    if P == -9999:
+        return -9999
     H_guess = weir_H_simp(Q, L)
 
     def residual(H):
@@ -337,7 +320,7 @@ def compute_y_flip_adv(Q, L, P):
         s_final = max(0.48, (1 - 0.1 * (P / H_flip)) / 1.1)
         return (s_final * H_flip) + P
     except ValueError:
-        return np.nan
+        return -9999
 
 
 def _solve_intersection(residual_func, q_min, q_max, fallback_val):
@@ -372,18 +355,23 @@ def rating_curve_intercept_adv(L: float, P: float, a: float, b: float,
 
     def residual(Q, which):
         if Q <= 0.001: return 1e6
-        
+
         y_t = a * Q ** b
         H = weir_H_simp(Q, L)
         y1 = solve_y1(H, P)
-        
+        if y1 == -9999:
+            return 1e6
+
         if which == 'flip':
             y_target = compute_y_flip_simp(Q, L, P)
         elif which == 'conjugate':
             y_target = calc_y2_adv(Q, y1, L, xs1, xs2, dist)
         else:
             return 1e6
-            
+
+        if y_target == -9999:
+            return 1e6
+
         return y_target - y_t
 
     Q_min = _solve_intersection(lambda q: residual(q, 'conjugate'), Q_min_search, Q_max_search, Q_min_search)
@@ -399,7 +387,7 @@ def solve_weir_geom(Q_input, L_input, YT_input, Wse_input):
     total_height = YT_input + Wse_input
 
     # 1. Solve H and P analytically
-    H_solution, P_solution = weir_H_adv(Q_input, L_input, Wse_input, total_height)
+    H_solution, P_solution = weir_H_adv(Q_input, L_input, YT_input, total_height)
 
     if P_solution < 0:
         P_solution = -9999
@@ -435,7 +423,7 @@ def solve_y1(H_input, P_input):
     real_roots = [r.real for r in roots if np.isreal(r) and r.real > 0]
     
     if not real_roots:
-        return 0.1 # Fallback
+        return -9999
         
     # The smallest positive root the supercritical depth (y1)
     # The largest is usually the subcritical depth (y0)
@@ -475,8 +463,12 @@ def calc_y2_simp(H_input, P_input):
     if P_input == -9999 or H_input == -9999: return -9999
 
     y_1 = solve_y1(H_input, P_input)
+    if y_1 == -9999:
+        return -9999
     Fr_1 = solve_Fr_simp(H_input, P_input)
-    
+    if Fr_1 == -9999:
+        return -9999
+
     return (y_1/2) * (-1 + np.sqrt(1 + 8 * Fr_1**2))
 
 
