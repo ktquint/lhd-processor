@@ -135,6 +135,7 @@ def select_arc_results_dir():
 def create_mannings_esa(manning_txt, manning_n_value):
     with open(manning_txt, 'w') as f:
         f.write('LC_ID\tDescription\tManning_n\n')
+        f.write(f'0\tNoData\t{manning_n_value}\n')
         f.write(f'10\tTree Cover\t{manning_n_value}\n')
         f.write(f'20\tShrubland\t{manning_n_value}\n')
         f.write(f'30\tGrassland\t{manning_n_value}\n')
