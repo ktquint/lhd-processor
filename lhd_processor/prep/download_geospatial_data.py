@@ -2,7 +2,9 @@ import os
 import s3fs
 import laspy
 import requests
+import shutil
 import tempfile
+import zipfile
 import rasterio
 import numpy as np
 import pandas as pd
@@ -16,12 +18,78 @@ from shapely.geometry import Point, box
 from datetime import datetime, timedelta
 import time
 import traceback
-from typing import Union, Tuple, List
+from typing import Optional, Union, Tuple, List
 
 try:
     import gdal
 except ImportError:
     from osgeo import gdal
+
+# Direct NLDI endpoint for the initial COMID lookup. We bypass pynhd's
+# comid_byloc here because its pygeoutils JSON parser crashes (surfaces as
+# "CRS attribute" AttributeError) on certain server responses, which would
+# make ~70% of NID-sourced dam coordinates fail before the navigation step.
+_NLDI_BASE = "https://labs-beta.waterdata.usgs.gov/api/nldi/linked-data"
+_NLDI_COMID_URL = f"{_NLDI_BASE}/comid/position"
+
+
+def _fetch_seed_flowline(comid: int, timeout: float = 30) -> Optional[gpd.GeoDataFrame]:
+    """Return a 1-row GeoDataFrame with the geometry of `comid`, or None.
+
+    Used as a fallback when neither upstream nor downstream navigation
+    returns anything (e.g. headwater + terminal reach, coastline,
+    disconnected canal). Lets us at least produce a flowline gpkg
+    containing the seed reach so the dam isn't fully dropped from the
+    pipeline.
+    """
+    try:
+        r = requests.get(f"{_NLDI_BASE}/comid/{int(comid)}", timeout=timeout)
+    except requests.RequestException:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        payload = r.json()
+    except ValueError:
+        return None
+    feats = payload.get("features") or []
+    if not feats:
+        return None
+    try:
+        gdf = gpd.GeoDataFrame.from_features(feats, crs="EPSG:4326")
+    except Exception:
+        return None
+    if gdf.empty:
+        return None
+    if "comid" not in gdf.columns and "identifier" in gdf.columns:
+        gdf = gdf.rename(columns={"identifier": "comid"})
+    return gdf
+
+
+def _lookup_comid_direct(lon: float, lat: float, timeout: float = 30) -> Optional[int]:
+    """Return the NHDPlus V2 COMID nearest (lon, lat), or None if NLDI 404s.
+
+    No retries (caller decides). 404 means NLDI has no flowline at that point.
+    """
+    try:
+        r = requests.get(_NLDI_COMID_URL, params={"coords": f"POINT({lon} {lat})"}, timeout=timeout)
+    except requests.RequestException:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        payload = r.json()
+    except ValueError:
+        return None
+    feats = payload.get("features") or []
+    if not feats:
+        return None
+    props = feats[0].get("properties") or {}
+    val = props.get("comid") or props.get("identifier")
+    try:
+        return int(val) if val is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def sanitize_filename(filename):
@@ -38,10 +106,14 @@ def sanitize_filename(filename):
 # 1. FLOWLINE FUNCTIONS (NHDPlus & TDX-Hydro)
 # =================================================================
 
-def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km: Union[float, Tuple[float, float], List[float]] = (1, 2), site_id=None):
+def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km: Union[float, Tuple[float, float], List[float]] = (1, 2), site_id=None, vaa_df=None):
     """
     Uses HyRiver NLDI to fetch NHDPlus flowlines, merges VAAs (hydroseq, dnhydroseq),
     and standardizes ID columns.
+
+    vaa_df : pre-fetched result of nhd.nhdplus_vaa(). When provided, the function
+             skips the download entirely — pass this when calling from a parallel
+             context to avoid concurrent writes to the shared cache file.
     """
     try:
         if distance_km is None:
@@ -63,25 +135,12 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
                     print(f"Failed to initialize NLDI after retries: {e}")
                     return None, None
 
-        try:
-            comid_df = nldi.comid_byloc((lon, lat))
-        except Exception as e:
-            print(f"NLDI Error: {e}")
+        # Direct HTTP call to NLDI for COMID resolution — see _lookup_comid_direct
+        # for why we bypass pynhd here.
+        comid_val = _lookup_comid_direct(lon, lat)
+        if comid_val is None:
             return None, None
 
-        if comid_df is None or comid_df.empty:
-            print(f"No NHD COMID found for location: {lat}, {lon}")
-            return None, None
-
-        if 'comid' not in comid_df.columns:
-             print(f"No 'comid' column in NLDI result. Columns: {comid_df.columns}")
-             return None, None
-
-        comid_val = comid_df.comid.values[0]
-        if pd.isna(comid_val):
-             print("Found None/NaN for COMID")
-             return None, None
-        
         # Create site-specific subdirectory if site_id is provided
         if site_id:
             site_flowline_dir = os.path.join(flowline_dir, str(site_id))
@@ -100,15 +159,19 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
                 print(f"Error reading existing file, redownloading: {e}")
 
         all_reaches = []
-        nav_modes = ["upstreamMain", "downstreamMain"]
+        # upstreamTributaries walks every branch (catches braided / canal /
+        # side-channel networks that main-stem navigation skips); downstreamMain
+        # stays on the main path because tributaries downstream rarely make
+        # sense from a screening perspective.
+        nav_modes = [("upstreamTributaries", "up"), ("downstreamMain", "down")]
 
-        for mode in nav_modes:
+        for mode, direction in nav_modes:
             try:
                 # Handle distance logic safely
                 dist = distance_km
                 if isinstance(distance_km, (tuple, list)):
                     if len(distance_km) == 2:
-                        dist = distance_km[0] if mode == "upstreamMain" else distance_km[1]
+                        dist = distance_km[0] if direction == "up" else distance_km[1]
                     elif len(distance_km) > 0:
                         dist = distance_km[0]
                     else:
@@ -127,7 +190,15 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
                 print(f"NLDI Navigation Error ({mode}): {e}")
 
         if not all_reaches:
-            return None, None
+            # Fallback: both nav directions came back empty (headwater +
+            # terminal reach, coastline, disconnected canal). Save just the
+            # seed COMID's own geometry so the dam still gets a flowline file.
+            seed = _fetch_seed_flowline(comid_val)
+            if seed is None or seed.empty:
+                print(f"  Both navigations empty AND seed fetch failed for COMID {comid_val} @ ({lat:.4f},{lon:.4f})")
+                return None, None
+            print(f"  Both navigations empty — using seed-only flowline for COMID {comid_val}")
+            all_reaches.append(seed)
 
         combined_df = pd.concat(all_reaches)
         combined_df.columns = combined_df.columns.str.lower()
@@ -147,7 +218,8 @@ def download_nhd_flowline(lat: float, lon: float, flowline_dir: str, distance_km
             # Fetch the VAA table (hydroseq and dnhydroseq are in the 'vaa' service)
             # Note: nhdplus_vaa() fetches the national parquet file
             try:
-                vaa_df = nhd.nhdplus_vaa()
+                if vaa_df is None:
+                    vaa_df = nhd.nhdplus_vaa()
                 if vaa_df is not None and not vaa_df.empty:
                     vaa_subset = vaa_df[['comid', 'hydroseq', 'dnhydroseq']].rename(columns={'comid': 'nhdplusid'})
 
@@ -379,6 +451,40 @@ def download_tdx_flowline(latitude: float, longitude: float, flowline_dir: str, 
 # 2. DEM FUNCTIONS (3DEP & METADATA)
 # =================================================================
 
+_RASTER_EXTS = (".tif", ".tiff", ".img")
+
+
+def _extract_zipped_raster(zip_path: str, raw_dem_dir: str) -> Union[str, None]:
+    """
+    Extract the first raster (.tif/.tiff/.img) member from `zip_path` into
+    `raw_dem_dir` (flattening any internal directory structure), delete the
+    zip, and return the extracted file path. Returns None on failure.
+
+    USGS TNM serves 1/9 arc-second NED tiles as .zip archives wrapping an
+    .img raster; gdal.Warp can't merge a bare .zip path directly.
+    """
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            raster_members = [
+                m for m in zf.namelist()
+                if not m.endswith("/")
+                and os.path.basename(m).lower().endswith(_RASTER_EXTS)
+            ]
+            if not raster_members:
+                print(f"Error: no raster (.tif/.img) inside {zip_path}")
+                return None
+            member = raster_members[0]
+            out_name = sanitize_filename(os.path.basename(member))
+            out_path = os.path.join(raw_dem_dir, out_name)
+            with zf.open(member) as src, open(out_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        os.remove(zip_path)
+        return out_path
+    except Exception as e:
+        print(f"Error extracting {zip_path}: {e}")
+        return None
+
+
 def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
     """
     Directly queries the TNM API to find all 1m tiles along the flowline,
@@ -415,8 +521,9 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
             # Let's stick to 10m if requested, but maybe fallback to 1m if 10m fails?
             # Usually 10m covers more area.
         else:
-            # Default behavior: Try 1m first, then 1/3 arc-second
+            # Default behavior: Try 1m first, then 1/9 arc-second, then 1/3 arc-second
             datasets_to_try.append("Digital Elevation Model (DEM) 1 meter")
+            datasets_to_try.append("National Elevation Dataset (NED) 1/9 arc-second")
             datasets_to_try.append("National Elevation Dataset (NED) 1/3 arc-second Current")
 
         items = []
@@ -467,20 +574,38 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
             tile_name = sanitize_filename(os.path.basename(tile_url))  # Using your sanitize logic
             local_path = os.path.join(raw_dem_dir, tile_name)
 
-            if not os.path.exists(local_path):
-                print(f"Downloading: {tile_name} from {tile_url}")
-                try:
-                    r = requests.get(tile_url, stream=True)
-                    r.raise_for_status()
-                    with open(local_path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                except Exception as dl_err:
-                    print(f"Dam {lhd_id}: Error downloading {tile_url}: {dl_err}")
+            if os.path.exists(local_path):
+                # Cache hit: a prior run may have left either the raster or an
+                # unextracted zip.
+                if local_path.lower().endswith(".zip"):
+                    extracted = _extract_zipped_raster(local_path, raw_dem_dir)
+                    if extracted:
+                        downloaded_tiles.append(extracted)
                     continue
+                downloaded_tiles.append(local_path)
+                continue
+
+            print(f"Downloading: {tile_name} from {tile_url}")
+            try:
+                r = requests.get(tile_url, stream=True)
+                r.raise_for_status()
+                with open(local_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            except Exception as dl_err:
+                print(f"Dam {lhd_id}: Error downloading {tile_url}: {dl_err}")
+                continue
+
+            # USGS TNM serves some tiers (e.g. 1/9 arc-second NED) as a .zip
+            # wrapping an .img raster; gdal.Warp needs the bare raster.
+            if local_path.lower().endswith(".zip"):
+                extracted = _extract_zipped_raster(local_path, raw_dem_dir)
+                if extracted:
+                    downloaded_tiles.append(extracted)
+                continue
 
             downloaded_tiles.append(local_path)
-            
+
         print(f"Dam {lhd_id}: Downloaded tiles: {downloaded_tiles}")
 
         if not downloaded_tiles:
@@ -513,7 +638,12 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
              print(f"Dam {lhd_id}: Output DEM NOT created at {out_path} (gdal.Warp returned but file missing)")
 
         # Return resolution in meters (approx)
-        res_val = 1 if "1 meter" in found_dataset else 10
+        if "1 meter" in found_dataset:
+            res_val = 1
+        elif "1/9 arc-second" in found_dataset:
+            res_val = 3
+        else:
+            res_val = 10
         return out_path, res_val, "USGS TNM API"
 
     except Exception as e:

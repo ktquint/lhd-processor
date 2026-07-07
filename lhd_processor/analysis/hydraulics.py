@@ -363,7 +363,7 @@ def rating_curve_intercept_adv(L: float, P: float, a: float, b: float,
             return 1e6
 
         if which == 'flip':
-            y_target = compute_y_flip_simp(Q, L, P)
+            y_target = compute_y_flip_adv(Q, L, P)
         elif which == 'conjugate':
             y_target = calc_y2_adv(Q, y1, L, xs1, xs2, dist)
         else:
@@ -487,9 +487,9 @@ def rating_curve_intercepts_simp(L_input: float, P_input: float, a: float, b: fl
     def residual(Q, which):
         H = weir_H_simp(Q, L_input)
         y_t = a * Q**b
-        
+
         if which == 'flip':
-            y_target = calc_yFlip_simp(H, P_input)
+            y_target = compute_y_flip_adv(Q, L_input, P_input)
         elif which == 'conjugate':
             y_target = calc_y2_simp(H, P_input)
         else:
