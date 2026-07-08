@@ -18,12 +18,18 @@ class DatabaseManager:
         self.sites_schema = [
             'site_id', 'name', 'latitude', 'longitude', 'weir_length', 'comments',
             'dem_path', 'dem_resolution_m', 'dem_source_info',
+            'dem_tile_count', 'dem_tile_files', 'dem_publication_date',
             'flowline_path_nhd', 'flowline_path_tdx',
             'flowline_raster_nhd', 'flowline_raster_tdx',
             'reach_id', 'linkno',  # Added these to schema
             'P_known', 'lidar_date', 'lidar_project',
             'land_raster',
-            'flowline_source', 'streamflow_source' # Added these to schema
+            'flowline_source', 'streamflow_source', # Added these to schema
+            # Step 2 (ARC) run provenance -- what was actually fed into the hydraulic model
+            'arc_flowline_source', 'arc_streamflow_source',
+            'baseflow_method', 'ep_value',
+            'manning_n_mode', 'manning_n_value', 'manning_n_txt',
+            'arc_run_date', 'arc_run_status',
         ]
 
         self.incidents_schema = ['site_id', 'date', 'flow_nwm', 'flow_geo']

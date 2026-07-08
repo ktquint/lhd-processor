@@ -43,16 +43,16 @@ def setup_calc_tab(parent_tab):
                  state="readonly").grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
 
     # Row 3: Calculation Mode
-    calc_mode_var = tk.StringVar(value="Advanced")
+    calc_mode_var = tk.StringVar(value="Leutheusser")
     ttk.Label(path_frame, text="Calculation Mode:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
 
     mode_frame = ttk.Frame(path_frame)
     mode_frame.grid(row=3, column=1, columnspan=2, sticky=tk.W)
 
-    ttk.Radiobutton(mode_frame, text="Advanced",
-                    variable=calc_mode_var, value="Advanced").pack(side="left", padx=(0, 10))
-    ttk.Radiobutton(mode_frame, text="Simplified",
-                    variable=calc_mode_var, value="Simplified").pack(side="left")
+    ttk.Radiobutton(mode_frame, text="Leutheusser",
+                    variable=calc_mode_var, value="Leutheusser").pack(side="left", padx=(0, 10))
+    ttk.Radiobutton(mode_frame, text="Olsen",
+                    variable=calc_mode_var, value="Olsen").pack(side="left")
 
     # Row 4: Results Folder
     ttk.Label(path_frame, text="Results Folder:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)

@@ -15,14 +15,14 @@ from matplotlib_scalebar.scalebar import ScaleBar
 
 # Internal imports
 from .hydraulics import (solve_weir_geom,
-                         calc_y2_simp,
-                         calc_y2_adv,
-                         weir_H_simp,
-                         compute_y_flip_adv,
+                         calc_y2_olsen,
+                         calc_y2_leutheusser,
+                         weir_H_olsen,
+                         compute_y_flip_leutheusser,
                          solve_y1,
-                         rating_curve_intercepts_simp,
-                         rating_curve_intercept_adv,
-                         solve_Fr_simp)
+                         rating_curve_intercepts_olsen,
+                         rating_curve_intercept_leutheusser,
+                         solve_Fr_olsen)
 
 from .utils import (merge_arc_results,
                     merge_databases,
@@ -386,15 +386,15 @@ class CrossSection:
 
 
             
-            H_current = weir_H_simp(Q, self.L)
+            H_current = weir_H_olsen(Q, self.L)
             Y_Conj1 = solve_y1(H_current, self.P)
 
-            if self.calc_mode == "Advanced":
-                Y_Flip = compute_y_flip_adv(Q, self.L, self.P)
-                Y_Conj2 = calc_y2_adv(Q, Y_Conj1, self.L, self.y_1_shifted, self.y_2_shifted, self.dist)
+            if self.calc_mode == "Leutheusser":
+                Y_Flip = compute_y_flip_leutheusser(Q, self.L, self.P)
+                Y_Conj2 = calc_y2_leutheusser(Q, Y_Conj1, self.L, self.y_1_shifted, self.y_2_shifted, self.dist)
             else:
-                Y_Flip = compute_y_flip_adv(Q, self.L, self.P)
-                Y_Conj2 = calc_y2_simp(H_current, self.P)
+                Y_Flip = compute_y_flip_leutheusser(Q, self.L, self.P)
+                Y_Conj2 = calc_y2_olsen(H_current, self.P)
 
             Y_Flips.append(Y_Flip)
             Y_Conjugates.append(Y_Conj2)
@@ -434,12 +434,12 @@ class CrossSection:
             return None
 
     def get_dangerous_flow_range(self):
-        if self.calc_mode == "Advanced":
-            return rating_curve_intercept_adv(self.L, self.P, self.a, self.b,
+        if self.calc_mode == "Leutheusser":
+            return rating_curve_intercept_leutheusser(self.L, self.P, self.a, self.b,
                                               self.y_1_shifted, self.y_2_shifted, self.dist,
                                               self.Qmin, self.Qmax)
-        elif self.calc_mode == "Simplified":
-            return rating_curve_intercepts_simp(self.L, self.P, self.a, self.b,
+        elif self.calc_mode == "Olsen":
+            return rating_curve_intercepts_olsen(self.L, self.P, self.a, self.b,
                                                 self.Qmin, self.Qmax)
         else:
             return None
@@ -702,12 +702,12 @@ class Dam:
                             # Updated to pass shifted profiles
                             
                             # Recalculate H for this Q
-                            H_current = weir_H_simp(Q, xs.L)
+                            H_current = weir_H_olsen(Q, xs.L)
                             y_1_curr = solve_y1(H_current, xs.P)
                             
-                            if self.calc_mode == "Advanced":
-                                y_flip = compute_y_flip_adv(Q, xs.L, xs.P)
-                                y_2_sol = calc_y2_adv(Q, y_1_curr, xs.L, xs.y_1_shifted, xs.y_2_shifted, xs.dist, return_momentum=True)
+                            if self.calc_mode == "Leutheusser":
+                                y_flip = compute_y_flip_leutheusser(Q, xs.L, xs.P)
+                                y_2_sol = calc_y2_leutheusser(Q, y_1_curr, xs.L, xs.y_1_shifted, xs.y_2_shifted, xs.dist, return_momentum=True)
                                 if isinstance(y_2_sol, tuple):
                                     y_2, m1, m2 = y_2_sol
                                 else:
@@ -715,12 +715,12 @@ class Dam:
                                     m1 = None
                                     m2 = None
                             else:
-                                y_flip = compute_y_flip_adv(Q, xs.L, xs.P)
-                                y_2 = calc_y2_simp(H_current, xs.P)
+                                y_flip = compute_y_flip_leutheusser(Q, xs.L, xs.P)
+                                y_2 = calc_y2_olsen(H_current, xs.P)
                                 m1 = None
                                 m2 = None
 
-                            Fr_1 = solve_Fr_simp(H_current, xs.P)
+                            Fr_1 = solve_Fr_olsen(H_current, xs.P)
 
                             jump = hydraulic_jump_type(y_2, y_t, y_flip)
                             hydro_results_list.append({

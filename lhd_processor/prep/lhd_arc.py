@@ -80,8 +80,12 @@ class ArcDam:
         else:
             self.strm_tif_clean = safe_p(dam_row.get('flowline_raster_nhd'))
 
-        # Use the shared Manning's n file in the LAND folder
-        if self.land_raster:
+        # Manning's n file: a per-dam override (e.g. regionalized NWM value) takes
+        # precedence over the shared uniform-value file in the LAND folder.
+        manning_override = safe_p(dam_row.get('manning_n_txt'))
+        if manning_override:
+            self.manning_n_txt = manning_override
+        elif self.land_raster:
             self.manning_n_txt = self.land_raster.parent.parent / 'Manning_n.txt'
         else:
             self.manning_n_txt = None

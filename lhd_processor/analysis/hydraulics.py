@@ -11,7 +11,7 @@ g = 9.81 # m/s**2
 C_W = 0.62
 
 
-def weir_coef_adv(H_input, P_input):
+def weir_coef_leutheusser(H_input, P_input):
     if P_input == -9999:
         return -9999
     
@@ -165,7 +165,7 @@ def calc_froude_custom(Q, y, xs1, xs2, dist):
     return V / np.sqrt(g * D)
 
 
-def calc_y2_adv(Q, y1, L, xs1, xs2, dist, return_momentum=False):
+def calc_y2_leutheusser(Q, y1, L, xs1, xs2, dist, return_momentum=False):
     # 1. Calculate Momentum at y1 (Supercritical side)
     A1 = y1 * L
     y_cj1 = y1/2
@@ -235,7 +235,7 @@ def Fr_eq(Fr, x):
     return 1 - term1 + term2
 
 
-def weir_H_simp(Q, L):
+def weir_H_olsen(Q, L):
     """
     Analytically solves for Head (H).
     """
@@ -243,13 +243,13 @@ def weir_H_simp(Q, L):
     return H
 
 
-def weir_H_adv(Q, L, Y_T, total_height):
+def weir_H_leutheusser(Q, L, Y_T, total_height):
     """
     Unified solver that handles both free-flow (Rehbock) and
     submerged (Azimi) regimes in a single iteration.
     """
     # 1. Initial guess based on free-flow assumptions
-    H_guess = weir_H_simp(Q, L)
+    H_guess = weir_H_olsen(Q, L)
 
     def residual(H):
         P = total_height - H
@@ -281,20 +281,20 @@ def weir_H_adv(Q, L, Y_T, total_height):
         return H_guess, total_height - H_guess
 
 
-def compute_y_flip_simp(Q, L, P):
+def compute_y_flip_olsen(Q, L, P):
     if P == -9999: return -9999
-    H = weir_H_simp(Q, L)
+    H = weir_H_olsen(Q, L)
     return (H + P) / 1.1
 
 
-def compute_y_flip_adv(Q, L, P):
+def compute_y_flip_leutheusser(Q, L, P):
     """
     Solves for the specific Head (H) and Flip Depth (Y_flip) at the
     moment of transition for a given discharge Q.
     """
     if P == -9999:
         return -9999
-    H_guess = weir_H_simp(Q, L)
+    H_guess = weir_H_olsen(Q, L)
 
     def residual(H):
         # 1. Calculate submergence ratios for both regimes
@@ -344,12 +344,12 @@ def _solve_intersection(residual_func, q_min, q_max, fallback_val):
             return q_max
 
 
-def rating_curve_intercept_adv(L: float, P: float, a: float, b: float,
+def rating_curve_intercept_leutheusser(L: float, P: float, a: float, b: float,
                                xs1: list[float], xs2: list[float], dist: float,
                                Q_min_search: float, Q_max_search: float) -> tuple[float, float]:
     """
     Solves the intercept of the tailwater rating curve and the conjugate and flip rating curves
-    using advanced hydraulic calculations (XS geometry).
+    using Leutheusser hydraulic calculations (XS geometry).
     """
     if P == -9999: return -9999, -9999
 
@@ -357,15 +357,15 @@ def rating_curve_intercept_adv(L: float, P: float, a: float, b: float,
         if Q <= 0.001: return 1e6
 
         y_t = a * Q ** b
-        H = weir_H_simp(Q, L)
+        H = weir_H_olsen(Q, L)
         y1 = solve_y1(H, P)
         if y1 == -9999:
             return 1e6
 
         if which == 'flip':
-            y_target = compute_y_flip_adv(Q, L, P)
+            y_target = compute_y_flip_leutheusser(Q, L, P)
         elif which == 'conjugate':
-            y_target = calc_y2_adv(Q, y1, L, xs1, xs2, dist)
+            y_target = calc_y2_leutheusser(Q, y1, L, xs1, xs2, dist)
         else:
             return 1e6
 
@@ -387,7 +387,7 @@ def solve_weir_geom(Q_input, L_input, YT_input, Wse_input):
     total_height = YT_input + Wse_input
 
     # 1. Solve H and P analytically
-    H_solution, P_solution = weir_H_adv(Q_input, L_input, YT_input, total_height)
+    H_solution, P_solution = weir_H_leutheusser(Q_input, L_input, YT_input, total_height)
 
     if P_solution < 0:
         P_solution = -9999
@@ -395,7 +395,7 @@ def solve_weir_geom(Q_input, L_input, YT_input, Wse_input):
 
     return H_solution, P_solution
 
-# Simplified Calculations
+# Olsen Calculations
 
 def solve_y1(H_input, P_input):
     """
@@ -431,7 +431,7 @@ def solve_y1(H_input, P_input):
     
     return y1_ratio * H_input
 
-def solve_Fr_simp(H_input, P_input):
+def solve_Fr_olsen(H_input, P_input):
     """
         solves the equation:
         1 - (9/(4 * C_W**2) * 0.5 * Fr**2)**(1/3) * (1 + P/H)
@@ -455,7 +455,7 @@ def solve_Fr_simp(H_input, P_input):
         return 1.0 # Fallback to critical flow
 
 
-def calc_y2_simp(H_input, P_input):
+def calc_y2_olsen(H_input, P_input):
     """
         solve the Bélanger equation:
         Y_2 = Y_1 / 2 * (-1 + np.sqrt(1 + 8 * Fr_1**2))
@@ -465,19 +465,19 @@ def calc_y2_simp(H_input, P_input):
     y_1 = solve_y1(H_input, P_input)
     if y_1 == -9999:
         return -9999
-    Fr_1 = solve_Fr_simp(H_input, P_input)
+    Fr_1 = solve_Fr_olsen(H_input, P_input)
     if Fr_1 == -9999:
         return -9999
 
     return (y_1/2) * (-1 + np.sqrt(1 + 8 * Fr_1**2))
 
 
-def calc_yFlip_simp(H_input, P_input):
+def calc_yFlip_olsen(H_input, P_input):
     if P_input == -9999 or H_input == -9999: return -9999
     return (H_input + P_input) / 1.1
     
 
-def rating_curve_intercepts_simp(L_input: float, P_input: float, a: float, b: float,
+def rating_curve_intercepts_olsen(L_input: float, P_input: float, a: float, b: float,
                                  Q_min_search: float, Q_max_search: float) -> tuple[float, float]:
     """
         solves the intercept of the tailwater rating curve and the conjugate and flip rating curves
@@ -485,13 +485,13 @@ def rating_curve_intercepts_simp(L_input: float, P_input: float, a: float, b: fl
     if P_input == -9999: return -9999, -9999
 
     def residual(Q, which):
-        H = weir_H_simp(Q, L_input)
+        H = weir_H_olsen(Q, L_input)
         y_t = a * Q**b
 
         if which == 'flip':
-            y_target = compute_y_flip_adv(Q, L_input, P_input)
+            y_target = compute_y_flip_leutheusser(Q, L_input, P_input)
         elif which == 'conjugate':
-            y_target = calc_y2_simp(H, P_input)
+            y_target = calc_y2_olsen(H, P_input)
         else:
             return 1e6
             

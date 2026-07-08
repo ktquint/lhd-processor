@@ -1,18 +1,26 @@
 import gc
 import os
 import threading
+from datetime import datetime
 import pandas as pd
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from dask.distributed import Client, LocalCluster, as_completed as dask_as_completed
 
 from . import utils
+from ..data_manager import DatabaseManager
 
 try:
     from ..prep.lhd_arc import ArcDam
 except Exception as e:
     print(f"Warning: Could not import ARC. Error: {e}")
     ArcDam = None
+
+try:
+    from ..prep.nwm_roughness import get_regional_manning_n
+except Exception as e:
+    print(f"Warning: Could not import NWM roughness lookup. Error: {e}")
+    get_regional_manning_n = None
 
 # Module-level widgets
 arc_xlsx_entry = None
@@ -21,14 +29,17 @@ arc_flowline_var = None
 arc_streamflow_var = None
 arc_baseflow_var = None
 arc_ep_entry = None
+arc_manning_mode_var = None
 arc_manning_entry = None
+arc_manning_label = None
 arc_run_button = None
 arc_stop_button = None
 
 stop_event = threading.Event()
 
 def setup_arc_tab(parent_tab):
-    global arc_xlsx_entry, arc_results_entry, arc_flowline_var, arc_streamflow_var, arc_baseflow_var, arc_ep_entry, arc_manning_entry
+    global arc_xlsx_entry, arc_results_entry, arc_flowline_var, arc_streamflow_var, arc_baseflow_var, arc_ep_entry
+    global arc_manning_mode_var, arc_manning_entry, arc_manning_label
     global arc_run_button, arc_stop_button
 
     arc_frame = ttk.LabelFrame(parent_tab, text="Step 2: Automated Rating Curves")
@@ -96,10 +107,31 @@ def setup_arc_tab(parent_tab):
     on_bf_method_change()
 
     # Row 4: Manning's n
-    ttk.Label(arc_frame, text="Manning's n:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
-    arc_manning_entry = ttk.Entry(arc_frame)
+    mn_frame = ttk.Frame(arc_frame)
+    mn_frame.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=5)
+    mn_frame.columnconfigure(1, weight=1)
+    mn_frame.columnconfigure(3, weight=1)
+
+    ttk.Label(mn_frame, text="Manning's n Source:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+    arc_manning_mode_var = tk.StringVar(value="Uniform Value")
+    mn_mode_combo = ttk.Combobox(mn_frame, textvariable=arc_manning_mode_var, state="readonly",
+                                  values=("Uniform Value", "Regionalized (NWM)"))
+    mn_mode_combo.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+
+    arc_manning_label = ttk.Label(mn_frame, text="Manning's n:")
+    arc_manning_label.grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+    arc_manning_entry = ttk.Entry(mn_frame, width=10)
     arc_manning_entry.insert(0, "0.035")
-    arc_manning_entry.grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
+    arc_manning_entry.grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
+
+    def on_manning_mode_change(*args):
+        if arc_manning_mode_var.get() == "Regionalized (NWM)":
+            arc_manning_label.config(text="Fallback n (reach not in NWM data):")
+        else:
+            arc_manning_label.config(text="Manning's n:")
+
+    arc_manning_mode_var.trace_add("write", on_manning_mode_change)
+    on_manning_mode_change()
 
     # Row 5: Buttons
     btn_frame = ttk.Frame(arc_frame)
@@ -152,6 +184,7 @@ def process_single_dam_arc(dam_dict, results_dir, flowline_source, streamflow_so
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ['GDAL_CACHEMAX'] = '256'
 
+    dam_id = int(dam_dict.get(list(dam_dict.keys())[0]))
     dam_name = dam_dict.get('name', "Unknown Dam")
     try:
         if ep_value is not None:
@@ -160,10 +193,10 @@ def process_single_dam_arc(dam_dict, results_dir, flowline_source, streamflow_so
         dam_i.process_dam()
         del dam_i
         gc.collect()
-        return True, dam_name, None
+        return True, dam_id, dam_name, None
     except Exception as e:
         gc.collect()
-        return False, dam_name, str(e)
+        return False, dam_id, dam_name, str(e)
 
 def threaded_run_arc():
     try:
@@ -176,8 +209,9 @@ def threaded_run_arc():
         fl_source = arc_flowline_var.get()
         sf_source = arc_streamflow_var.get()
         bf_method = arc_baseflow_var.get()
+        manning_mode = arc_manning_mode_var.get()
         manning_n = arc_manning_entry.get()
-        
+
         ep_value = None
         if bf_method == "WSE and Exceedance Probability":
             try:
@@ -196,23 +230,60 @@ def threaded_run_arc():
             messagebox.showerror("Error", "Invalid Manning's n value.")
             return
 
-        # Create shared Manning's n file
         # Assuming the LAND folder is in the same directory as the Excel file
         project_path = os.path.dirname(excel_loc)
         land_folder = os.path.join(project_path, "LAND")
         os.makedirs(land_folder, exist_ok=True)
-        manning_txt = os.path.join(land_folder, 'Manning_n.txt')
-        create_mannings_esa(manning_txt, manning_n_value)
-        utils.set_status(f"Created shared Manning's n file at {manning_txt}")
 
         df = pd.read_excel(excel_loc)
         dams = df.to_dict(orient='records')
         count_to_run = len(dams)
 
+        # Per-dam Manning's n actually resolved for this run -- persisted to the
+        # Excel DB below so it doesn't only live in the LAND/*.txt files.
+        resolved_manning_n = {}
+
+        if manning_mode == "Regionalized (NWM)":
+            if get_regional_manning_n is None:
+                messagebox.showerror("Error", "NWM roughness lookup is unavailable (missing dependency).")
+                return
+            if 'reach_id' not in df.columns:
+                messagebox.showerror("Error", "Excel database has no 'reach_id' column. Run Step 1 with NHDPlus/National Water Model selected first.")
+                return
+
+            reach_ids = [r for r in df['reach_id'].tolist() if pd.notna(r)]
+            utils.set_status(f"Looking up NWM channel roughness for {len(set(reach_ids))} reaches...")
+            regional_n = get_regional_manning_n(reach_ids, status_callback=utils.set_status)
+            utils.set_status(f"Found NWM roughness for {len(regional_n)} of {len(set(reach_ids))} reaches; "
+                              f"using fallback n={manning_n_value} for the rest.")
+
+            for dam in dams:
+                dam_id = int(dam.get(list(dam.keys())[0]))
+                reach_id = dam.get('reach_id')
+                n_value = regional_n.get(int(reach_id)) if pd.notna(reach_id) else None
+                if n_value is None:
+                    n_value = manning_n_value
+                manning_txt = os.path.join(land_folder, f'Manning_n_{dam_id}.txt')
+                create_mannings_esa(manning_txt, n_value)
+                dam['manning_n_txt'] = manning_txt
+                resolved_manning_n[dam_id] = (n_value, manning_txt)
+            utils.set_status("Created per-dam regionalized Manning's n files.")
+        else:
+            # Shared Manning's n file, uniform value applied to all dams.
+            manning_txt = os.path.join(land_folder, 'Manning_n.txt')
+            create_mannings_esa(manning_txt, manning_n_value)
+            utils.set_status(f"Created shared Manning's n file at {manning_txt}")
+            for dam in dams:
+                dam_id = int(dam.get(list(dam.keys())[0]))
+                resolved_manning_n[dam_id] = (manning_n_value, manning_txt)
+
         total_cores = os.cpu_count() or 1
         worker_count = max(1, int(total_cores / 3))
 
         utils.set_status(f"Initializing Dask Workers ({worker_count}) for {count_to_run} dams...")
+
+        run_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        run_results = {}  # dam_id -> (success, err)
 
         with LocalCluster(processes=True, threads_per_worker=1, n_workers=worker_count) as cluster:
             with Client(cluster) as client:
@@ -226,7 +297,8 @@ def threaded_run_arc():
                         break
 
                     try:
-                        success, name, err = future.result()
+                        success, dam_id, name, err = future.result()
+                        run_results[dam_id] = (success, err)
                         processed_so_far += 1
                         if success:
                             utils.set_status(f"Finished {name} ({processed_so_far}/{count_to_run})")
@@ -235,6 +307,29 @@ def threaded_run_arc():
                     except Exception as e:
                         processed_so_far += 1
                         utils.set_status(f"Worker crashed on a task ({processed_so_far}/{count_to_run}): {e}")
+
+        # Persist run provenance (what was actually fed into the hydraulic model)
+        # back to the Excel DB, so it's fully documented alongside the results.
+        utils.set_status("Saving run provenance to Excel database...")
+        try:
+            db = DatabaseManager(excel_loc)
+            for dam_id, (n_value, n_txt) in resolved_manning_n.items():
+                success, err = run_results.get(dam_id, (None, None))
+                status = "Success" if success else (f"Failed: {err}" if success is False else "Not Run")
+                db.update_site_data(dam_id, {
+                    'arc_flowline_source': fl_source,
+                    'arc_streamflow_source': sf_source,
+                    'baseflow_method': bf_method,
+                    'ep_value': ep_value,
+                    'manning_n_mode': manning_mode,
+                    'manning_n_value': n_value,
+                    'manning_n_txt': n_txt,
+                    'arc_run_date': run_timestamp,
+                    'arc_run_status': status,
+                })
+            db.save()
+        except Exception as e:
+            utils.set_status(f"Warning: ARC run finished but failed to save provenance to Excel DB: {e}")
 
         if stop_event.is_set():
             messagebox.showwarning("Stopped", "Processing stopped by user.")

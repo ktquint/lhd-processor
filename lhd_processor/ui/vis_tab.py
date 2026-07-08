@@ -83,7 +83,7 @@ def setup_vis_tab(parent_tab):
     ttk.Checkbutton(fig_frame, text="Generate Bar Chart (All)", variable=chk_bar).grid(row=6, column=1, sticky=tk.W)
 
     # Calculation Mode (Hidden but needed for AnalysisDam init)
-    calc_mode_var = tk.StringVar(value="Advanced")
+    calc_mode_var = tk.StringVar(value="Leutheusser")
 
     display_btn = ttk.Button(parent_tab, text="4. Generate & Display Figures", command=start_display)
     display_btn.pack(fill="x", padx=10, pady=10)

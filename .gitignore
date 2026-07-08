@@ -2,15 +2,31 @@
 *.gpkg
 *.parquet
 *.zarr/
+*.zarr.zip
 
 # Excel (scratch files)
 *_temp.xlsx
 *_scratch.xlsx
 
+# Local/generated data
+lhd_processor/data/*.xlsx
+
+# Notebook outputs (regenerable figures/stats)
+notebooks/*.png
+notebooks/data_counts_summary.csv
+notebooks/model_failure_diagnostics.csv
+notebooks/p_height_summary_stats.csv
+
 # IDE
 .idea/
+.claude/
+user_settings.json
 
 # Cache
 cache/
 .cache/
 *_cache/
+__pycache__/
+
+# macOS
+.DS_Store

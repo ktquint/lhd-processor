@@ -1,4 +1,5 @@
 import os
+import re
 import s3fs
 import laspy
 import requests
@@ -558,19 +559,32 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
 
         if not items:
             print(f"Dam {lhd_id}: No DEM tiles found in TNM API for requested resolutions.")
-            return None, None, "No DEM Found"
+            return None, None, {"status": "No DEM Found"}
 
         # 3. Download tiles to a regional folder
         raw_dem_dir = os.path.join(dem_dir, 'raw_3dep')
         os.makedirs(raw_dem_dir, exist_ok=True)
         downloaded_tiles = []
+        tile_projects = set()
+        tile_pub_dates = set()
+
+        def _record_tile_meta(source_item):
+            # TNM tile URLs look like:
+            #   .../Elevation/1m/Projects/<project_name>/TIFF/<tile>.tif
+            url = source_item.get("downloadURL") or ""
+            match = re.search(r"/Projects/([^/]+)/", url)
+            if match:
+                tile_projects.add(match.group(1))
+            pub_date = source_item.get("publicationDate")
+            if pub_date:
+                tile_pub_dates.add(str(pub_date))
 
         for item in items:
             tile_url = item.get("downloadURL")
             if not tile_url:
                 print(f"Dam {lhd_id}: Item missing downloadURL: {item}")
                 continue
-                
+
             tile_name = sanitize_filename(os.path.basename(tile_url))  # Using your sanitize logic
             local_path = os.path.join(raw_dem_dir, tile_name)
 
@@ -581,8 +595,10 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
                     extracted = _extract_zipped_raster(local_path, raw_dem_dir)
                     if extracted:
                         downloaded_tiles.append(extracted)
+                        _record_tile_meta(item)
                     continue
                 downloaded_tiles.append(local_path)
+                _record_tile_meta(item)
                 continue
 
             print(f"Downloading: {tile_name} from {tile_url}")
@@ -602,15 +618,17 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
                 extracted = _extract_zipped_raster(local_path, raw_dem_dir)
                 if extracted:
                     downloaded_tiles.append(extracted)
+                    _record_tile_meta(item)
                 continue
 
             downloaded_tiles.append(local_path)
+            _record_tile_meta(item)
 
         print(f"Dam {lhd_id}: Downloaded tiles: {downloaded_tiles}")
 
         if not downloaded_tiles:
             print(f"Dam {lhd_id}: No tiles were successfully downloaded.")
-            return None, None, "Download Failed"
+            return None, None, {"status": "Download Failed"}
 
         # 4. Warp & Merge (Produces the Rectangular DEM for ARC)
         site_dem_dir = os.path.join(dem_dir, str(lhd_id))
@@ -644,12 +662,21 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
             res_val = 3
         else:
             res_val = 10
-        return out_path, res_val, "USGS TNM API"
+
+        dem_meta = {
+            "status": "OK",
+            "dataset": found_dataset,
+            "tile_count": len(downloaded_tiles),
+            "tile_files": [os.path.basename(t) for t in downloaded_tiles],
+            "projects": sorted(tile_projects),
+            "publication_dates": sorted(tile_pub_dates),
+        }
+        return out_path, res_val, dem_meta
 
     except Exception as e:
         print(f"Dam {lhd_id}: Critical Error in download_dem: {e}")
         traceback.print_exc()
-        return None, None, "Error"
+        return None, None, {"status": "Error", "error": str(e)}
 
 
 # =================================================================

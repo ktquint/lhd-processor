@@ -345,15 +345,27 @@ class LowHeadDam:
             print(f"Dam {self.site_id}: Skipping DEM assignment (Missing Flowlines).")
             return
 
-        path, res, project_name = download_dem(self.site_id, self.flowline_gdf, dem_dir, resolution)
+        path, res, dem_meta = download_dem(self.site_id, self.flowline_gdf, dem_dir, resolution)
 
         if path:
             self.dem_path = path
             self.res_meters = res
             self.site_data['dem_path'] = path
             self.site_data['dem_resolution_m'] = res
+            self.site_data['dem_source_info'] = dem_meta.get('dataset') or "USGS TNM API"
+            self.site_data['dem_tile_count'] = dem_meta.get('tile_count')
+            self.site_data['dem_tile_files'] = "; ".join(dem_meta.get('tile_files', []))
+
+            projects = dem_meta.get('projects', [])
+            project_name = "; ".join(projects)
             self.site_data['lidar_project'] = project_name
-            self.site_data['dem_source_info'] = "USGS 3DEP via Py3DEP"
+
+            # NOTE: this is the DEM product's USGS *publication* date, not the LiDAR
+            # flight/acquisition date. Keep it separate from `lidar_date`, which
+            # est_dem_baseflow() populates from the point-cloud GPS time (find_water_gpstime)
+            # and treats as authoritative -- if present it skips that more precise lookup.
+            pub_dates = dem_meta.get('publication_dates', [])
+            self.site_data['dem_publication_date'] = "; ".join(pub_dates)
 
             year_match = re.search(r'(20\d{2}|FY\d{2})', project_name)
             if year_match:
