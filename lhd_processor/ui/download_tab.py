@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import utils
 from ..data_manager import DatabaseManager
-from ..prep import LowHeadDam as PrepDam, condense_zarr, create_reanalysis_file
+from ..prep import LowHeadDam as PrepDam, condense_zarr, create_reanalysis_file, prune_raw_dem_tiles
 
 # Module-level widgets
 database_entry = None
@@ -17,11 +17,12 @@ land_use_entry = None
 flowline_var = None
 dd_var = None
 streamflow_var = None
+delete_raw_tiles_var = None
 prep_run_button = None
 
 def setup_download_tab(parent_tab):
     global database_entry, dem_entry, strm_entry, land_use_entry
-    global flowline_var, dd_var, streamflow_var, prep_run_button
+    global flowline_var, dd_var, streamflow_var, delete_raw_tiles_var, prep_run_button
 
     # Frame
     prep_frame = ttk.LabelFrame(parent_tab, text="Step 1: Download and Prepare Data")
@@ -60,6 +61,12 @@ def setup_download_tab(parent_tab):
     database_entry = add_path_row(r, "Database (.xlsx):", select_database, is_file=True, must_exist=True); r+=1
     dem_entry = add_path_row(r, "DEM Folder:", select_dem_dir, is_file=False, must_exist=False); r+=1
     dd_var = add_combo(r, "   ↳ DEM Resolution (m):", ("1", "10"), "1"); r+=1
+
+    delete_raw_tiles_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(input_frame, text="   ↳ Delete raw 3DEP tiles after merging (frees disk space)",
+                    variable=delete_raw_tiles_var).grid(row=r, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+    r += 1
+
     strm_entry = add_path_row(r, "Hydrography Folder:", select_strm_dir, is_file=False, must_exist=False); r+=1
     flowline_var = add_combo(r, "   ↳ Flowline Source:", ("NHDPlus", "TDX-Hydro", "Both"), "NHDPlus"); r+=1
     streamflow_var = add_combo(r, "   ↳ Streamflow Source:", ("National Water Model", "GEOGLOWS", "Both"), "National Water Model"); r+=1
@@ -109,6 +116,7 @@ def threaded_prepare_data():
         dem_folder = dem_entry.get()
         strm_folder = strm_entry.get()
         land_folder = land_use_entry.get() if land_use_entry else None
+        delete_raw_tiles = delete_raw_tiles_var.get() if delete_raw_tiles_var else True
         
         # Infer results folder for Stage 4
         results_folder = os.path.join(os.path.dirname(xlsx_path), "Results")
@@ -173,6 +181,11 @@ def threaded_prepare_data():
                     future.result()
                 except Exception as e:
                     print(f"Error in DEM worker: {e}")
+
+        if delete_raw_tiles:
+            count, freed_bytes = prune_raw_dem_tiles(dem_folder)
+            if count:
+                utils.set_status(f"Deleted {count} raw 3DEP tile(s) ({freed_bytes / 1e6:.1f} MB freed).")
 
         utils.set_status("Stage 4/4: Finalizing hydraulics...")
         with ThreadPoolExecutor(max_workers=4) as executor:

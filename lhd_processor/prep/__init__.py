@@ -3,3 +3,4 @@ from .classes import LowHeadDam
 
 # Expose key helper functions if needed (optional)
 from .streamflow_processing import create_reanalysis_file, condense_zarr
+from .download_geospatial_data import prune_raw_dem_tiles

@@ -679,6 +679,35 @@ def download_dem(lhd_id, flowline_gdf, dem_dir, resolution=None):
         return None, None, {"status": "Error", "error": str(e)}
 
 
+def prune_raw_dem_tiles(dem_dir: str) -> Tuple[int, int]:
+    """Deletes the shared raw_3dep/ tile cache under dem_dir.
+
+    Raw 3DEP tiles (downloaded/extracted by download_dem) are only needed
+    transiently to build each dam's merged/warped DEM; they're shared across
+    all dams in a batch, so this should only be called once the whole batch
+    is done. Mirrors lhd-screening's end-of-run raw tile prune.
+
+    Returns (files_deleted, bytes_freed). Safe to call if nothing to prune.
+    """
+    raw_dem_dir = os.path.join(dem_dir, 'raw_3dep')
+    if not os.path.isdir(raw_dem_dir):
+        return 0, 0
+
+    count = 0
+    total_bytes = 0
+    for root, _, files in os.walk(raw_dem_dir):
+        for name in files:
+            fpath = os.path.join(root, name)
+            try:
+                total_bytes += os.path.getsize(fpath)
+                count += 1
+            except OSError:
+                pass
+
+    shutil.rmtree(raw_dem_dir)
+    return count, total_bytes
+
+
 # =================================================================
 # 3. BASEFLOW & LIDAR DATE ESTIMATION
 # =================================================================
