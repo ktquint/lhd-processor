@@ -22,6 +22,8 @@ except Exception as e:
     print(f"Warning: Could not import NWM roughness lookup. Error: {e}")
     get_regional_manning_n = None
 
+from ..prep.download_geospatial_data import CONSTANT_LC_CODE, make_constant_land_raster
+
 # Module-level widgets
 arc_xlsx_entry = None
 arc_results_entry = None
@@ -75,9 +77,21 @@ def setup_arc_tab(parent_tab):
     arc_flowline_var = tk.StringVar(value="NHDPlus")
     ttk.Combobox(opts_frame, textvariable=arc_flowline_var, state="readonly", values=("NHDPlus", "TDX-Hydro")).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
 
-    ttk.Label(opts_frame, text="Streamflow Source:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+    ttk.Label(opts_frame, text="Streamflow Source (locked to Flowline Source):").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
     arc_streamflow_var = tk.StringVar(value="National Water Model")
-    ttk.Combobox(opts_frame, textvariable=arc_streamflow_var, state="readonly", values=("National Water Model", "GEOGLOWS")).grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
+    arc_streamflow_combo = ttk.Combobox(opts_frame, textvariable=arc_streamflow_var, state="disabled",
+                                         values=("National Water Model", "GEOGLOWS"))
+    arc_streamflow_combo.grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
+
+    # NHDPlus reaches only have NWM reach IDs; TDX-Hydro reaches only have
+    # GEOGLOWS linknos -- so the two aren't independent choices, and picking
+    # them separately is how a dam ends up processed with mismatched
+    # flowline/streamflow data.
+    def _sync_arc_streamflow_source(*args):
+        arc_streamflow_var.set("GEOGLOWS" if arc_flowline_var.get() == "TDX-Hydro" else "National Water Model")
+
+    arc_flowline_var.trace_add("write", _sync_arc_streamflow_source)
+    _sync_arc_streamflow_source()
 
     # Row 3: Baseflow Estimation
     bf_frame = ttk.Frame(arc_frame)
@@ -164,21 +178,19 @@ def select_arc_results_dir():
         arc_results_entry.delete(0, tk.END)
         arc_results_entry.insert(0, d)
 
-def create_mannings_esa(manning_txt, manning_n_value):
+def create_mannings_table(manning_txt, manning_n_value):
+    """Writes the Manning's n lookup table ARC keys off the constant land raster.
+
+    Only two codes exist on that raster's effective land-use array: the
+    constant placeholder fill (CONSTANT_LC_CODE) and 80/"water", which ARC
+    always force-overlays onto every stream cell regardless of the source
+    landcover raster (see Automated_Rating_Curve_Generator.py's stream-cell
+    overlay). Both map to the same resolved n for this dam.
+    """
     with open(manning_txt, 'w') as f:
         f.write('LC_ID\tDescription\tManning_n\n')
-        f.write(f'0\tNoData\t{manning_n_value}\n')
-        f.write(f'10\tTree Cover\t{manning_n_value}\n')
-        f.write(f'20\tShrubland\t{manning_n_value}\n')
-        f.write(f'30\tGrassland\t{manning_n_value}\n')
-        f.write(f'40\tCropland\t{manning_n_value}\n')
-        f.write(f'50\tBuiltup\t{manning_n_value}\n')
-        f.write(f'60\tBare\t{manning_n_value}\n')
-        f.write(f'70\tSnowIce\t{manning_n_value}\n')
+        f.write(f'{CONSTANT_LC_CODE}\tConstant\t{manning_n_value}\n')
         f.write(f'80\tWater\t{manning_n_value}\n')
-        f.write(f'90\tHerbaceous Wetland\t{manning_n_value}\n')
-        f.write(f'95\tMangroves\t{manning_n_value}\n')
-        f.write(f'100\tMossLichen\t{manning_n_value}\n')
 
 def process_single_dam_arc(dam_dict, results_dir, flowline_source, streamflow_source, baseflow_method, ep_value=None):
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -230,14 +242,52 @@ def threaded_run_arc():
             messagebox.showerror("Error", "Invalid Manning's n value.")
             return
 
-        # Assuming the LAND folder is in the same directory as the Excel file
+        # Fallback only -- used for a dam that has no land raster at all yet
+        # (Step 1 was never run for it). Normally each dam's Manning's n file
+        # is written next to its own land raster (see dam_land_dirs below),
+        # wherever Step 1 was actually told to put it (LAND, LAND_NWM,
+        # LAND_GEO, ...), not this hardcoded default.
         project_path = os.path.dirname(excel_loc)
-        land_folder = os.path.join(project_path, "LAND")
-        os.makedirs(land_folder, exist_ok=True)
+        default_land_folder = os.path.join(project_path, "LAND")
+        os.makedirs(default_land_folder, exist_ok=True)
 
         df = pd.read_excel(excel_loc)
         dams = df.to_dict(orient='records')
         count_to_run = len(dams)
+
+        # DEM and land raster are each built to fit one flowline source's
+        # extent (see PrepDam._dem_land_key), so pick the column matching
+        # this run -- falling back to the old shared column for dams that
+        # predate the per-source split.
+        dem_col = 'dem_path_tdx' if fl_source == 'TDX-Hydro' else 'dem_path_nhd'
+        land_col = 'land_raster_tdx' if fl_source == 'TDX-Hydro' else 'land_raster_nhd'
+
+        # Land raster is a constant placeholder aligned to the DEM grid (the
+        # actual n value is resolved via the LU_Manning_n lookup table below,
+        # not the raster's pixel values). If a dam's DEM was ever regenerated
+        # with a different extent since its land raster was made, the two go
+        # out of alignment and ARC fails with "Rows do not Match!" -- so
+        # re-verify/rebuild it here every time ARC is (re)run, whichever
+        # Manning's n source is selected.
+        utils.set_status("Verifying land cover rasters match current DEMs...")
+        dam_land_dirs = {}
+        for dam in dams:
+            dam_id = int(dam.get(list(dam.keys())[0]))
+            dem_path = dam.get(dem_col) if pd.notna(dam.get(dem_col)) else dam.get('dem_path')
+            if not dem_path or pd.isna(dem_path) or not os.path.exists(dem_path):
+                continue
+            existing_land_raster = dam.get(land_col) if pd.notna(dam.get(land_col)) else dam.get('land_raster')
+            if existing_land_raster and pd.notna(existing_land_raster):
+                site_land_dir = os.path.dirname(os.path.dirname(existing_land_raster))
+            else:
+                site_land_dir = default_land_folder
+            dam_land_dirs[dam_id] = site_land_dir
+            try:
+                new_land_raster = make_constant_land_raster(dam_id, dem_path, site_land_dir)
+                dam['land_raster'] = new_land_raster
+                dam[land_col] = new_land_raster
+            except Exception as e:
+                utils.set_status(f"Warning: Could not verify/build land raster for dam {dam_id}: {e}")
 
         # Per-dam Manning's n actually resolved for this run -- persisted to the
         # Excel DB below so it doesn't only live in the LAND/*.txt files.
@@ -263,19 +313,30 @@ def threaded_run_arc():
                 n_value = regional_n.get(int(reach_id)) if pd.notna(reach_id) else None
                 if n_value is None:
                     n_value = manning_n_value
-                manning_txt = os.path.join(land_folder, f'Manning_n_{dam_id}.txt')
-                create_mannings_esa(manning_txt, n_value)
+                dam_land_dir = dam_land_dirs.get(dam_id, default_land_folder)
+                manning_txt = os.path.join(dam_land_dir, f'Manning_n_{dam_id}.txt')
+                create_mannings_table(manning_txt, n_value)
                 dam['manning_n_txt'] = manning_txt
+                dam['manning_n_value'] = n_value
                 resolved_manning_n[dam_id] = (n_value, manning_txt)
             utils.set_status("Created per-dam regionalized Manning's n files.")
         else:
-            # Shared Manning's n file, uniform value applied to all dams.
-            manning_txt = os.path.join(land_folder, 'Manning_n.txt')
-            create_mannings_esa(manning_txt, manning_n_value)
-            utils.set_status(f"Created shared Manning's n file at {manning_txt}")
+            # Uniform value applied to all dams, but still written next to
+            # each dam's own land raster rather than one shared location --
+            # keeps every dam's ARC_Input self-contained within its own
+            # LAND/LAND_NWM/LAND_GEO folder.
             for dam in dams:
                 dam_id = int(dam.get(list(dam.keys())[0]))
+                dam_land_dir = dam_land_dirs.get(dam_id, default_land_folder)
+                manning_txt = os.path.join(dam_land_dir, f'Manning_n_{dam_id}.txt')
+                create_mannings_table(manning_txt, manning_n_value)
+                # Clear out any per-dam override left over from a prior
+                # Regionalized (NWM) run -- otherwise ArcDam.__init__ prefers
+                # that stale path over this run's uniform-value file.
+                dam['manning_n_txt'] = manning_txt
+                dam['manning_n_value'] = manning_n_value
                 resolved_manning_n[dam_id] = (manning_n_value, manning_txt)
+            utils.set_status("Created per-dam uniform Manning's n files.")
 
         total_cores = os.cpu_count() or 1
         worker_count = max(1, int(total_cores / 3))

@@ -3,7 +3,6 @@ import ast
 import pyproj
 import geoglows
 import numpy as np
-import xarray as xr
 import pandas as pd
 import geopandas as gpd
 import contextily as ctx
@@ -14,6 +13,7 @@ from matplotlib.ticker import FixedLocator
 from matplotlib_scalebar.scalebar import ScaleBar
 
 # Internal imports
+from ..prep.nwm_api import load_api_key, fetch_percentile_flows
 from .hydraulics import (solve_weir_geom,
                          calc_y2_olsen,
                          calc_y2_leutheusser,
@@ -696,7 +696,11 @@ class Dam:
                     else:
                         Q = inc_row['flow_geo']
                     date = inc_row['date']
-                    if pd.notna(Q) and xs.P:
+                    # Q <= 0 gives a zero weir head, which blows up as a
+                    # division by zero further down (e.g. P/H in
+                    # compute_y_flip_leutheusser) -- there's no physically
+                    # meaningful flip/conjugate depth at zero flow anyway.
+                    if pd.notna(Q) and Q > 0 and xs.P:
                         try:
                             y_t = xs.get_tailwater_depth(Q)
                             # Updated to pass shifted profiles
@@ -746,26 +750,21 @@ class Dam:
         if self.hydrology == 'National Water Model':
             if self.nwm_id and not pd.isna(self.nwm_id):
                 try:
-                    current_dir = os.path.dirname(os.path.abspath(__file__))
-                    project_root = os.path.dirname(current_dir)
-                    zarr_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.zarr')
-                    if os.path.exists(zarr_path):
-                        ds = xr.open_zarr(zarr_path)
-                        if 'streamflow' in ds:
-                            # Assuming the zarr structure has feature_id as a dimension or coordinate,
-                            # and we want to select by it.
-                            # Adjust selection logic based on actual Zarr structure if needed.
-                            # Typically: ds.sel(feature_id=int(self.nwm_id)).streamflow.to_series()
-                            # But let's be safe and check if feature_id is a dim.
-                            
-                            # Note: xarray selection is lazy, so this is efficient.
-                            try:
-                                flow_series = ds.sel(feature_id=int(self.nwm_id))['streamflow'].to_series()
-                            except Exception as e:
-                                print(f"Error selecting ID {self.nwm_id} from Zarr: {e}")
-
+                    api_key = load_api_key()
+                    if not api_key:
+                        print(f"Warning: NWM_API_KEY not set (Dam {self.id})")
+                    else:
+                        flows = fetch_percentile_flows([int(self.nwm_id)], api_key)
+                        pcurve = flows.get(int(self.nwm_id))
+                        if pcurve:
+                            # 13-point NWM percentile-flow curve stands in for the full daily
+                            # record: every consumer of flow_series (plot_fdc, Qmin/Qmax_abs,
+                            # get_prob_from_Q lookups) only needs min/max and an FDC-shaped
+                            # curve, not per-date values -- no need to fetch/hold 44 years of
+                            # daily data per dam just for that.
+                            flow_series = pd.Series(list(pcurve.values()))
                 except Exception as e:
-                    print(f"Error reading NWM Zarr data: {e}")
+                    print(f"Error fetching NWM percentile flows: {e}")
         elif self.hydrology == 'GEOGLOWS':
             if self.geoglows_id and not pd.isna(self.geoglows_id):
                 try:

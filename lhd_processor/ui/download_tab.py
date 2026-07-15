@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import utils
 from ..data_manager import DatabaseManager
-from ..prep import LowHeadDam as PrepDam, condense_zarr, create_reanalysis_file, prune_raw_dem_tiles
+from ..prep import LowHeadDam as PrepDam, create_reanalysis_file, prune_raw_dem_tiles
 
 # Module-level widgets
 database_entry = None
@@ -50,17 +50,17 @@ def setup_download_tab(parent_tab):
         ttk.Button(input_frame, text="Select...", command=cmd).grid(row=row, column=2, padx=5, pady=5)
         return entry
 
-    def add_combo(row, label, values, default):
+    def add_combo(row, label, values, default, state="readonly"):
         ttk.Label(input_frame, text=label).grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
         var = tk.StringVar(value=default)
-        cb = ttk.Combobox(input_frame, textvariable=var, state="readonly", values=values)
+        cb = ttk.Combobox(input_frame, textvariable=var, state=state, values=values)
         cb.grid(row=row, column=1, padx=5, pady=5, sticky=tk.EW)
-        return var
+        return var, cb
 
     r = 0
     database_entry = add_path_row(r, "Database (.xlsx):", select_database, is_file=True, must_exist=True); r+=1
     dem_entry = add_path_row(r, "DEM Folder:", select_dem_dir, is_file=False, must_exist=False); r+=1
-    dd_var = add_combo(r, "   ↳ DEM Resolution (m):", ("1", "10"), "1"); r+=1
+    dd_var, _ = add_combo(r, "   ↳ DEM Resolution (m):", ("1", "10"), "1"); r+=1
 
     delete_raw_tiles_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(input_frame, text="   ↳ Delete raw 3DEP tiles after merging (frees disk space)",
@@ -68,9 +68,28 @@ def setup_download_tab(parent_tab):
     r += 1
 
     strm_entry = add_path_row(r, "Hydrography Folder:", select_strm_dir, is_file=False, must_exist=False); r+=1
-    flowline_var = add_combo(r, "   ↳ Flowline Source:", ("NHDPlus", "TDX-Hydro", "Both"), "NHDPlus"); r+=1
-    streamflow_var = add_combo(r, "   ↳ Streamflow Source:", ("National Water Model", "GEOGLOWS", "Both"), "National Water Model"); r+=1
+    flowline_var, _ = add_combo(r, "   ↳ Flowline Source:", ("NHDPlus", "TDX-Hydro", "Both"), "NHDPlus"); r+=1
+    streamflow_var, _ = add_combo(
+        r, "   ↳ Streamflow Source (locked to Flowline Source):",
+        ("National Water Model", "GEOGLOWS", "Both"), "National Water Model", state="disabled"); r+=1
     land_use_entry = add_path_row(r, "Land Use Folder:", select_land_use_dir, is_file=False, must_exist=False); r+=1
+
+    # NHDPlus reaches only have NWM reach IDs; TDX-Hydro reaches only have
+    # GEOGLOWS linknos -- so the two aren't independent choices, and picking
+    # them separately is how a dam ends up processed with mismatched
+    # flowline/streamflow data (and DEM/land rasters built to the wrong
+    # flowline's extent).
+    FLOWLINE_TO_STREAMFLOW = {
+        "NHDPlus": "National Water Model",
+        "TDX-Hydro": "GEOGLOWS",
+        "Both": "Both",
+    }
+
+    def _sync_streamflow_source(*args):
+        streamflow_var.set(FLOWLINE_TO_STREAMFLOW.get(flowline_var.get(), streamflow_var.get()))
+
+    flowline_var.trace_add("write", _sync_streamflow_source)
+    _sync_streamflow_source()
 
     prep_run_button = ttk.Button(prep_frame, text="1. Prepare Data & Update Database", command=start_prep_thread)
     prep_run_button.pack(pady=10, padx=10, fill="x")
@@ -168,9 +187,6 @@ def threaded_prepare_data():
 
         if all_comids:
             utils.set_status("Stage 2/4: Processing streamflow statistics...")
-            if streamflow_source == 'National Water Model':
-                nwm_zarr = os.path.join(package_root, 'data', 'nwm_v3_daily_retrospective.zarr')
-                condense_zarr(list(all_comids), nwm_zarr)
             create_reanalysis_file(list(all_comids), streamflow_source, package_root)
 
         utils.set_status("Stage 3/4: Fetching DEMs...")
@@ -196,6 +212,22 @@ def threaded_prepare_data():
                     future.result()
                 except Exception as e:
                     print(f"Error in Hydraulics worker: {e}")
+
+        # Stage 4 is what actually resolves each dam's LiDAR acquisition date
+        # (site_data['lidar_date']) -- too late to have known it back in Stage 2, so
+        # re-run the reanalysis file now with a real comid->date map. This is what
+        # makes known_baseflow reflect the dam's actual LiDAR-date flow instead of
+        # just the long-term median.
+        id_col = 'reach_id' if streamflow_source == 'National Water Model' else 'linkno'
+        if all_comids and id_col in db.sites.columns and 'lidar_date' in db.sites.columns:
+            dated = db.sites.dropna(subset=[id_col, 'lidar_date'])
+            comid_date_map = {
+                int(row[id_col]): str(row['lidar_date']) for _, row in dated.iterrows()
+                if str(row['lidar_date']).strip() not in ('', 'None', 'nan')
+            }
+            if comid_date_map:
+                utils.set_status(f"Refining baseflow with LiDAR-date flows for {len(comid_date_map)} dam(s)...")
+                create_reanalysis_file(list(all_comids), streamflow_source, package_root, comid_date_map=comid_date_map)
 
         utils.set_status("Saving database...")
         db.save()

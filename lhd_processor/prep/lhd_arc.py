@@ -69,16 +69,23 @@ class ArcDam:
         self.weir_length = dam_row.get('weir_length', 30)
         self.latitude = dam_row.get('latitude')
         self.longitude = dam_row.get('longitude')
-        self.dem_path = safe_p(dam_row.get('dem_path'))
-        
-        # Ensure output_dir is a Path object
-        self.output_dir = Path(results_dir) if results_dir else None
-        
-        self.land_raster = safe_p(dam_row.get('land_raster'))
+
+        # DEM and land raster are each built to fit one flowline source's
+        # extent (see PrepDam._dem_land_key), so a dam prepped under both
+        # NHDPlus and TDX-Hydro has two of each -- pick the one matching this
+        # run, falling back to the old shared column for dams that predate
+        # the per-source split.
         if flowline_source == 'TDX-Hydro':
+            self.dem_path = safe_p(dam_row.get('dem_path_tdx')) or safe_p(dam_row.get('dem_path'))
+            self.land_raster = safe_p(dam_row.get('land_raster_tdx')) or safe_p(dam_row.get('land_raster'))
             self.strm_tif_clean = safe_p(dam_row.get('flowline_raster_tdx'))
         else:
+            self.dem_path = safe_p(dam_row.get('dem_path_nhd')) or safe_p(dam_row.get('dem_path'))
+            self.land_raster = safe_p(dam_row.get('land_raster_nhd')) or safe_p(dam_row.get('land_raster'))
             self.strm_tif_clean = safe_p(dam_row.get('flowline_raster_nhd'))
+
+        # Ensure output_dir is a Path object
+        self.output_dir = Path(results_dir) if results_dir else None
 
         # Manning's n file: a per-dam override (e.g. regionalized NWM value) takes
         # precedence over the shared uniform-value file in the LAND folder.
@@ -89,7 +96,14 @@ class ArcDam:
             self.manning_n_txt = self.land_raster.parent.parent / 'Manning_n.txt'
         else:
             self.manning_n_txt = None
-            
+
+        # Same n used to solve for the bathymetry trapezoid depth from baseflow
+        # (ARC's Bathy_Mannings_n), so channel-shape estimation stays consistent
+        # with whatever roughness (uniform or NWM-regionalized) drives the rest
+        # of the model. Falls back to ARC's own historical default if unset.
+        manning_n_value = dam_row.get('manning_n_value')
+        self.bathy_mannings_n = float(manning_n_value) if pd.notna(manning_n_value) else 0.03
+
         self.flowline_source = flowline_source
         self.streamflow_source = streamflow_source
         self.baseflow_method = baseflow_method
@@ -98,7 +112,10 @@ class ArcDam:
         # ARC specific defaults
         self.create_reach_average_curve_file = 'False'
         self.bathy_use_banks = 'False'
-        self.find_banks_based_on_landcover = 'True'
+        # DEM-only ("flat water") bank-finding: more reliable than landcover for
+        # small/canopied channels, since the land raster is now a constant
+        # placeholder rather than real classified data (see arc_tab.create_mannings_table).
+        self.find_banks_based_on_landcover = 'False'
 
         if self.flowline_source == 'TDX-Hydro':
             self.flowline = safe_p(dam_row.get('flowline_path_tdx'))
@@ -161,6 +178,7 @@ class ArcDam:
 
             out_file.write('#Bathymetry_Information\n')
             out_file.write('Bathy_Trap_H\t0.20\n')
+            out_file.write(f'Bathy_Mannings_n\t{self.bathy_mannings_n}\n')
             out_file.write(f'Bathy_Use_Banks\t{self.bathy_use_banks}\n')
             if self.find_banks_based_on_landcover:
                 out_file.write(f'FindBanksBasedOnLandCover\t{self.find_banks_based_on_landcover}\n')
@@ -352,7 +370,14 @@ class ArcDam:
 
                         def ensure_list(val):
                             if isinstance(val, str) and val.startswith('['):
-                                return ast.literal_eval(val)
+                                try:
+                                    return ast.literal_eval(val)
+                                except (SyntaxError, ValueError):
+                                    # ARC writes these via np.array2string, which is
+                                    # whitespace- not comma-separated (e.g. "[1.2 3.4]")
+                                    # -- not valid Python list syntax, so literal_eval
+                                    # chokes. Parse it the way numpy itself would.
+                                    return np.fromstring(val.strip('[]'), sep=' ').tolist()
                             elif isinstance(val, (float, int)):
                                 return [val]
                             else:

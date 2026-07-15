@@ -15,7 +15,7 @@ from pynhd import NLDI
 import geopandas as gpd
 from pyproj import Transformer
 from shapely.ops import transform
-from shapely.geometry import Point, box
+from shapely.geometry import Point
 from datetime import datetime, timedelta
 import time
 import traceback
@@ -769,94 +769,41 @@ def est_dem_baseflow(stream_reach, source, method, project_hint=None):
 
 
 # =================================================================
-# 4. LAND USE FUNCTIONS (ESA WorldCover Alignment)
+# 4. LAND USE (constant placeholder raster)
 # =================================================================
+# ARC requires a landcover raster + a Manning's n lookup table keyed to it,
+# but this app assigns a single Manning's n per dam (uniform or NWM-
+# regionalized -- see ui/arc_tab.py's create_mannings_table) rather than
+# varying roughness by landcover class. A real classified raster (previously
+# ESA WorldCover) therefore has no effect on the Manning's n ARC samples, so
+# we use a constant placeholder instead -- this also drops FindBanksBasedOnLandCover's
+# only landcover-derived input, now that lhd_arc.py disables that flag in favor
+# of ARC's DEM-only ("flat water") bank-finding.
+CONSTANT_LC_CODE = 1
 
-def download_land_raster(lhd_id: int, dem_path: str, land_dir: str):
-    """
-    Downloads ESA WorldCover and aligns it exactly to the grid of the downloaded DEM.
-    """
-    # Create site-specific subdirectory for the final raster
+
+def make_constant_land_raster(lhd_id: int, dem_path: str, land_dir: str, lc_code: int = CONSTANT_LC_CODE):
+    """Writes a constant-value land cover raster aligned to the DEM grid."""
     site_land_dir = os.path.join(land_dir, str(lhd_id))
     os.makedirs(site_land_dir, exist_ok=True)
-    
+
     final_path = os.path.join(site_land_dir, f"{lhd_id}_LAND_Raster.tif")
-    if os.path.exists(final_path): return final_path
-
-    # Get target DEM specs
     with rasterio.open(dem_path) as src:
-        bounds = [src.bounds.left, src.bounds.top, src.bounds.right, src.bounds.bottom]
-        ncols, nrows = src.width, src.height
-        dem_crs = src.crs
-        # Create polygon for ESA intersection
-        geom = box(*src.bounds)
+        profile = src.profile.copy()
 
-    # Keep raw ESA tiles in the main LAND folder to share across sites
-    raw_esa_dir = os.path.join(land_dir, 'raw_esa')
-    raw_lc_tif = _download_esa_land_cover(geom, raw_esa_dir, dem_crs)
+    if os.path.exists(final_path):
+        # A cached raster is only valid if it still lines up with the DEM's
+        # grid -- if the DEM was ever regenerated with a different extent
+        # (e.g. re-fetched tiles, different bbox), ARC's "Rows do not Match!"
+        # check will reject a stale land raster of the wrong shape.
+        with rasterio.open(final_path) as existing:
+            if existing.width == profile["width"] and existing.height == profile["height"]:
+                return final_path
 
-    if raw_lc_tif:
-        # Align using GDAL Warp to ensure exact grid match
-        options = gdal.WarpOptions(
-            format='GTiff',
-            outputBounds=bounds,
-            width=ncols,
-            height=nrows,
-            dstSRS=dem_crs.to_wkt(),
-            resampleAlg=gdal.GRA_NearestNeighbour,
-            creationOptions=['COMPRESS=LZW']
-        )
-        gdal.Warp(final_path, raw_lc_tif, options=options)
-        return final_path
-    return None
+    profile.update(dtype="uint8", count=1, nodata=0, compress="lzw")
+    data = np.full((profile["height"], profile["width"]), lc_code, dtype=np.uint8)
 
+    with rasterio.open(final_path, "w", **profile) as dst:
+        dst.write(data, 1)
 
-def _download_esa_land_cover(geom, output_dir, dem_crs, year=2021):
-    # Reproject geometry to WGS84 for ESA S3 query
-    transformer = Transformer.from_crs(dem_crs, "EPSG:4326", always_xy=True)
-    geom_wgs84 = transform(transformer.transform, geom)
-
-    grid = gpd.read_file("https://esa-worldcover.s3.eu-central-1.amazonaws.com/esa_worldcover_grid.geojson")
-    tiles = grid[grid.intersects(geom_wgs84)]
-
-    os.makedirs(output_dir, exist_ok=True)
-    downloaded = []
-    for tile in tiles.ll_tile:
-        url = f"https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/{year}/map/ESA_WorldCover_10m_{year}_v200_{tile}_Map.tif"
-        path = os.path.join(output_dir, os.path.basename(url))
-        
-        # Validate existing file
-        if os.path.exists(path):
-            try:
-                with rasterio.open(path) as src:
-                    pass
-            except Exception:
-                print(f"Removing corrupted file: {path}")
-                os.remove(path)
-
-        if not os.path.exists(path):
-            print(f"Downloading {url}...")
-            try:
-                resp = requests.get(url, stream=True)
-                if resp.status_code == 200:
-                    with open(path, 'wb') as f:
-                        for chunk in resp.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                else:
-                    print(f"Failed to download {url}: Status {resp.status_code}")
-            except Exception as e:
-                print(f"Download error for {url}: {e}")
-
-        if os.path.exists(path):
-            downloaded.append(path)
-
-    if not downloaded:
-        return None
-
-    merged_path = os.path.join(output_dir, "merged_esa.tif")
-    try:
-        gdal.Warp(merged_path, downloaded, options=gdal.WarpOptions(format='GTiff', creationOptions=['COMPRESS=LZW']))
-        return merged_path
-    except Exception as e:
-        print(f"Error merging ESA tiles: {e}")
-        return None
+    return final_path

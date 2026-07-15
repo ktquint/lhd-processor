@@ -6,7 +6,6 @@ import geoglows
 import rasterio
 import numpy as np
 import pandas as pd
-import xarray as xr
 import geopandas as gpd
 from rasterio.features import rasterize
 from typing import Dict, Any, Optional, List
@@ -14,8 +13,9 @@ from typing import Dict, Any, Optional, List
 from .download_geospatial_data import (download_dem,
                                        download_nhd_flowline,
                                        download_tdx_flowline,
-                                       download_land_raster,
+                                       make_constant_land_raster,
                                        find_water_gpstime)
+from .nwm_api import load_api_key, fetch_retrospective_daily_mean, fetch_percentile_flows
 
 try:
     import gdal
@@ -130,7 +130,14 @@ class LowHeadDam:
         self.res_meters = self.site_data.get('dem_resolution_m')
         self.lidar_year = self.site_data.get('lidar_year')
         self.land_cover_path = self.site_data.get('land_raster')
-        
+
+        # Per-flowline-source DEM/land raster (each is built to fit that
+        # source's flowline extent, so NHDPlus and TDX-Hydro get their own).
+        self.dem_path_nhd = self.site_data.get('dem_path_nhd')
+        self.dem_path_tdx = self.site_data.get('dem_path_tdx')
+        self.land_raster_nhd = self.site_data.get('land_raster_nhd')
+        self.land_raster_tdx = self.site_data.get('land_raster_tdx')
+
         # Ensure flowline rasters are loaded from DB if available
         self.flowline_raster_nhd = self.site_data.get('flowline_raster_nhd')
         self.flowline_raster_tdx = self.site_data.get('flowline_raster_tdx')
@@ -189,28 +196,12 @@ class LowHeadDam:
                 return 0.0
 
         elif source == 'National Water Model' and self.nwm_id:
-            try:
-                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                zarr_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.zarr')
-
-                if os.path.exists(zarr_path):
-                    try:
-                        ds = xr.open_zarr(zarr_path, consolidated=True)
-                    except (KeyError, FileNotFoundError):
-                        ds = xr.open_zarr(zarr_path, consolidated=False)
-
-                    try:
-                        val = ds['streamflow'].sel(feature_id=int(self.nwm_id), time=date).values
-                        return float(val)
-                    except Exception:
-                        # Fallback if specific date/ID not found
-                        return 0.0
-                else:
-                    print(f"Warning: Zarr file NOT FOUND at {zarr_path}")
-                    return 0.0
-            except Exception as e:
-                print(f"NWM Zarr Error (Dam {self.site_id}): {e}")
+            api_key = load_api_key()
+            if not api_key:
+                print(f"Warning: NWM_API_KEY not set (Dam {self.site_id})")
                 return 0.0
+            val = fetch_retrospective_daily_mean(int(self.nwm_id), date, api_key)
+            return float(val) if val is not None else 0.0
         else:
             # Only print if we expected to find something but didn't have IDs
             if source:
@@ -232,21 +223,12 @@ class LowHeadDam:
                 return 0.0
 
         elif source == 'National Water Model' and self.nwm_id:
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            zarr_path = os.path.join(project_root, 'data', 'nwm_v3_daily_retrospective.zarr')
-            if os.path.exists(zarr_path):
-                try:
-                    try:
-                        ds = xr.open_zarr(zarr_path, consolidated=True)
-                    except (KeyError, FileNotFoundError):
-                        ds = xr.open_zarr(zarr_path, consolidated=False)
-
-                    median_val = ds['streamflow'].sel(feature_id=int(self.nwm_id)).median().values
-                    return float(median_val)
-                except Exception:
-                    return 0.0
-            else:
+            api_key = load_api_key()
+            if not api_key:
                 return 0.0
+            flows = fetch_percentile_flows([int(self.nwm_id)], api_key)
+            median_val = flows.get(int(self.nwm_id), {}).get(50)
+            return float(median_val) if median_val is not None else 0.0
         else:
             return 0.0
 
@@ -308,6 +290,13 @@ class LowHeadDam:
 
     # --- GEOSPATIAL ASSIGNMENT ---
 
+    def _dem_land_key(self) -> str:
+        """Which per-source DEM/land-raster slot applies to the active
+        flowline_source. Mirrors ArcDam's own flowline_source == 'TDX-Hydro'
+        check for picking flowline_raster_nhd vs flowline_raster_tdx -- 'Both'
+        and anything else default to 'nhd', same as there."""
+        return 'tdx' if self.flowline_source == 'TDX-Hydro' else 'nhd'
+
     def _try_load_existing_flowline(self):
         path = None
         src = str(self.flowline_source) if self.flowline_source else ""
@@ -338,6 +327,32 @@ class LowHeadDam:
                 print(f"Dam {self.site_id}: Failed to load existing flowline: {e}")
 
     def assign_dem(self, dem_dir: str, resolution: int):
+        # A dam prepped under both NHDPlus and TDX-Hydro has two DEMs, since
+        # each is built to fit that source's own flowline extent (see
+        # _dem_land_key) -- so check the per-source slot, not just the
+        # generic column, which only ever remembers the most recent source.
+        key = self._dem_land_key()
+        keyed_col = f'dem_path_{key}'
+        keyed_path = self.site_data.get(keyed_col)
+
+        # Reuse an already-built merged/warped DEM instead of re-querying the
+        # TNM API and re-warping every run. Check both the recorded path and
+        # the deterministic on-disk path, in case site_data is stale or
+        # missing (e.g. migrating a dam that predates the per-source split).
+        expected_path = os.path.join(dem_dir, str(self.site_id), f"LHD_{self.site_id}_3DEP_DEM.tif")
+        existing_path = None
+        if keyed_path and os.path.exists(keyed_path):
+            existing_path = keyed_path
+        elif os.path.exists(expected_path):
+            existing_path = expected_path
+
+        if existing_path:
+            print(f"Dam {self.site_id}: DEM already exists at {existing_path}, skipping download.")
+            self.dem_path = existing_path
+            self.site_data['dem_path'] = existing_path
+            self.site_data[keyed_col] = existing_path
+            return
+
         if self.flowline_gdf is None:
             self._try_load_existing_flowline()
 
@@ -351,6 +366,7 @@ class LowHeadDam:
             self.dem_path = path
             self.res_meters = res
             self.site_data['dem_path'] = path
+            self.site_data[keyed_col] = path
             self.site_data['dem_resolution_m'] = res
             self.site_data['dem_source_info'] = dem_meta.get('dataset') or "USGS TNM API"
             self.site_data['dem_tile_count'] = dem_meta.get('tile_count')
@@ -448,9 +464,10 @@ class LowHeadDam:
 
     def assign_land(self, land_dir: str):
         if self.dem_path:
-            land_raster = download_land_raster(self.site_id, str(self.dem_path), land_dir)
+            land_raster = make_constant_land_raster(self.site_id, str(self.dem_path), land_dir)
             self.land_cover_path = land_raster
             self.site_data['land_raster'] = land_raster
+            self.site_data[f'land_raster_{self._dem_land_key()}'] = land_raster
             
     def generate_stream_raster(self):
         """Generates the clean stream raster required for ARC."""
@@ -493,7 +510,13 @@ class LowHeadDam:
             strm_dir = os.path.dirname(cfg['path'])
             clean_strm_tif = os.path.join(strm_dir, f"{cfg['prefix']}_{int(cfg['id'])}_clean.tif")
             raw_strm_tif = clean_strm_tif.replace('_clean.tif', '.tif')
-            
+
+            if os.path.exists(clean_strm_tif):
+                print(f"Dam {self.site_id}: {cfg['source']} stream raster already exists at {clean_strm_tif}, skipping regeneration.")
+                setattr(self, cfg['target_attr'], clean_strm_tif)
+                self.site_data[cfg['target_attr']] = clean_strm_tif
+                continue
+
             print(f"Dam {self.site_id}: Generating {cfg['source']} stream raster at {clean_strm_tif}...")
             try:
                 create_arc_strm_raster(cfg['path'], raw_strm_tif, self.dem_path, cfg['field'])
